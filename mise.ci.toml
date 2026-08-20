@@ -1,0 +1,6 @@
+# CI-runner-only tools for vitre. Merged over vitre/mise.toml when MISE_ENV=ci.
+[tools]
+# Gradle (the `test` task) and ktlint need a JDK; vitre targets JVM <= 17. Hosted
+# ubuntu-latest preinstalls one, the self-hosted Railway runner does not. Version from the
+# workspace-root [vars], shared with daytwo (the other Kotlin project).
+java = "{{ vars.java_version }}"

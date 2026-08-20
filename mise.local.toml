@@ -1,0 +1,132 @@
+# Local-only dev tasks for the vitre *sample* apps (sample/androidApp, sample/iosApp).
+# mise loads *.local.toml unconditionally and merges it with vitre/mise.toml, so a task
+# here can depend on one there. Nothing in this file is wanted on CI — the vitre CI job
+# only runs ktlint and :vitre-core:allTests, and it must not try to install the android
+# CLI or boot a simulator. (mise loads *.local.toml even under MISE_ENV=ci, so "local" here is
+# a convention CI relies on by not running these tasks, not an env mise enforces.)
+#
+# The library itself needs nothing beyond mise.toml — `mise run test`/`build` cover it. These
+# tasks exist for the loop you actually want while developing the engine: change
+# vitre-core, then see the change running in the sample gallery on a real device.
+
+[tools]
+# `android` CLI — dev:android uses it to list/boot AVDs and to install+launch the sample APK.
+# Same declaration as daytwo/mise.local.toml: no registry entry exists, so the download URLs
+# and checksums are spelled out per platform. Only linux-x64/macos-arm64 are ever installed
+# (mise.local.lock's platform set), the rest are here so the block stays copy-compatible.
+android-cli = { version = "latest", bin = "android", platforms = { linux-x64 = { checksum_url = "https://dl.google.com/android/cli/{{ version }}/linux_x86_64/android.sha256", url = "https://dl.google.com/android/cli/{{ version }}/linux_x86_64/android" }, macos-arm64 = { checksum_url = "https://dl.google.com/android/cli/{{ version }}/darwin_arm64/android.sha256", url = "https://dl.google.com/android/cli/{{ version }}/darwin_arm64/android" }, macos-x64 = { checksum_url = "https://dl.google.com/android/cli/{{ version }}/darwin_x86_64/android.sha256", url = "https://dl.google.com/android/cli/{{ version }}/darwin_x86_64/android" }, windows-x64 = { bin = "android.exe", checksum_url = "https://dl.google.com/android/cli/{{ version }}/windows_x86_64/android.exe.sha256", url = "https://dl.google.com/android/cli/{{ version }}/windows_x86_64/android.exe" } }, version_list_url = "https://dl.google.com/android/cli/latest/debian/dists/stable/main/binary-amd64/Packages", version_regex = '(?m)^Version: (\S+)$' }
+
+# ── Sample apps ────────────────────────────────────────────────────────────────
+#
+# Both tasks are build → install → launch on whatever device is already around, so neither
+# needs Android Studio or Xcode open. There is no server, tunnel or docker to bring up first:
+# vitre is a client library, and the sample drives real sites over the network directly.
+#
+#   dev:android   sample/androidApp on a phone or emulator
+#   dev:ios       sample/iosApp on a simulator
+#   dev:desktop   sample/desktopApp in a window on this machine
+#
+# `mise run android:install` (mise.toml) stays as the plain no-android-CLI fallback: gradle
+# installDebug onto whatever adb already sees, nothing else.
+
+[tasks."dev:android"]
+description = "Build, install & launch the sample Android app on a device/emulator"
+run = """
+set -euo pipefail
+
+# Device pick order: a plugged-in phone beats an emulator (connecting one is the deliberate
+# choice), a booted emulator beats cold-starting one, and only if nothing is attached do we boot
+# the first AVD. adb names every emulator transport `emulator-<port>`, so anything else is real
+# hardware. `android emulator start` returns once the device is fully booted.
+serial=""
+for s in $(adb devices | awk '$2 == "device" { print $1 }'); do
+  case "$s" in
+    emulator-*) [ -n "$serial" ] || serial="$s" ;;
+    *) serial="$s"; break ;;
+  esac
+done
+
+if [ -z "$serial" ]; then
+  avd="$(android emulator list 2>/dev/null | head -1)"
+  [ -n "$avd" ] || { echo "No device attached and no AVD to start (see 'android emulator create')." >&2; exit 1; }
+  echo "No device attached — starting emulator '$avd'..."
+  android emulator start "$avd"
+  serial="$(adb devices | awk '$2 == "device" { print $1 }' | head -1)"
+  [ -n "$serial" ] || { echo "Emulator '$avd' started but adb sees no device." >&2; exit 1; }
+fi
+echo "Target device: $serial"
+
+./gradlew :sample:androidApp:assembleDebug
+android run --device="$serial" \
+  --apks=sample/androidApp/build/outputs/apk/debug/androidApp-debug.apk \
+  --activity=dev.ggoggam.vitre.sample.android.MainActivity
+"""
+
+[tasks."dev:desktop"]
+description = "Build & launch the sample desktop app (Compose for Desktop + KCEF)"
+# The simplest of the three by a wide margin: no device, no simulator, no install step — the
+# Compose Desktop plugin's `run` task builds the JVM target and launches the window in place.
+#
+# The JVM args JCEF needs (`--add-opens` for the AWT internals it reaches into) are set on every
+# JavaExec task in sample/desktopApp/build.gradle.kts rather than here, so running the main
+# function straight from an IDE works too.
+#
+# First run downloads and unpacks a Chromium bundle into ~/.vitre/kcef-bundle, which takes
+# a few minutes on a cold cache; the app shows it as a progress screen. Every later run starts
+# straight into the gallery.
+run = "./gradlew :sample:desktopApp:run"
+
+[tasks."dev:ios"]
+description = "Build, install & launch the sample iOS app on a simulator"
+# The Kotlin framework is not built here: the Xcode target's "Compile Kotlin Framework" build
+# phase shells back out to `./gradlew :sample:composeApp:embedAndSignAppleFrameworkForXcode`,
+# so one xcodebuild covers both halves and the framework can't drift from the Swift app.
+#
+# Deliberately NOT CODE_SIGNING_ALLOWED=NO — a simulator build signs ad-hoc with no
+# provisioning profile involved, so disabling it buys nothing and costs entitlements.
+#
+# Simulator-only: a physical iPhone would need a real provisioning profile and devicectl. That
+# is the one place this does not mirror dev:android, which does prefer real hardware.
+run = """
+set -euo pipefail
+
+# Mirrors dev:android's device handling: reuse a booted simulator, otherwise boot one rather
+# than making you go open Simulator.app first. Set VITRE_SIM to pick by name — several
+# runtimes ship same-named devices, so everything downstream keys off the UDID.
+#
+# Every one of these needs its `|| true`: no match makes grep exit 1, and under
+# `set -o pipefail` that becomes the pipeline's status, so `set -e` would kill the task before
+# the -z check below could report anything useful. "No simulator booted" is the normal first
+# run, not an error.
+sim="${VITRE_SIM:-}"
+if [ -n "$sim" ]; then
+  udid="$(xcrun simctl list devices available | grep -F "$sim (" | grep -oE '[0-9A-F-]{36}' | head -1 || true)"
+  [ -n "$udid" ] || { echo "No available simulator named '$sim'." >&2; exit 1; }
+else
+  udid="$(xcrun simctl list devices booted | grep -oE '[0-9A-F-]{36}' | head -1 || true)"
+  if [ -z "$udid" ]; then
+    udid="$(xcrun simctl list devices available | grep -F iPhone | grep -oE '[0-9A-F-]{36}' | head -1 || true)"
+    [ -n "$udid" ] || { echo "No iPhone simulator available (see 'xcrun simctl list devices')." >&2; exit 1; }
+  fi
+fi
+
+# Idempotent: `boot` on an already-booted device exits non-zero, and bootstatus then returns at
+# once. `open -a Simulator` puts the window up — simctl alone boots it headless.
+xcrun simctl boot "$udid" 2>/dev/null || true
+open -a Simulator --args -CurrentDeviceUDID "$udid"
+xcrun simctl bootstatus "$udid" -b
+echo "Target simulator: $(xcrun simctl list devices | grep -F "$udid" | sed 's/^ *//' || true)"
+
+# derivedDataPath must be ABSOLUTE — a relative one makes Xcode resolve artifact paths against
+# a mangled prefix (see the same note in daytwo/mise.local.toml). Under {{ config_root }}/build,
+# which .gitignore already covers.
+dd="{{ config_root }}/build/ios-sample"
+xcodebuild -project sample/iosApp/iosApp.xcodeproj -scheme iosApp -configuration Debug \
+  -sdk iphonesimulator -derivedDataPath "$dd" build
+# Same `|| true` reason as above — find exits 1 if the products dir is missing, and the honest
+# "Build produced no .app" beats set -e aborting with nothing said.
+app="$(find "$dd/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name '*.app' | head -1 || true)"
+[ -n "$app" ] || { echo "Build produced no .app" >&2; exit 1; }
+xcrun simctl install "$udid" "$app"
+xcrun simctl launch "$udid" dev.ggoggam.vitre.sample
+"""

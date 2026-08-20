@@ -1,0 +1,30 @@
+# prek builds each hook's environment against the first Python it finds, and the self-hosted
+# Railway runner image ships 3.8.10 — below the >= 3.9 that pre-commit-hooks v6 requires, so the
+# hooks fail to install there while passing on any machine with a newer default. Naming a version
+# makes prek's own uv fetch one instead of hunting the PATH. It lands in ~/.cache/prek, which CI
+# already caches for this project, and this file is part of that cache key.
+default_language_version:
+  python: python3.13
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.bin$'
+      - id: end-of-file-fixer
+        exclude: '\.bin$'
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+
+  - repo: local
+    hooks:
+      - id: ktlint
+        name: ktlint
+        entry: mise run fmt
+        language: system
+        pass_filenames: false
+        types: [kotlin]

@@ -1,0 +1,52 @@
+# ktlint lives here (not the workspace-root mise.toml) so only the Kotlin projects install it.
+# The JDK it needs on CI runners is in mise.ci.toml.
+[tools]
+ktlint = "latest"
+
+[tasks.wrapper]
+description = "Generate the Gradle wrapper at the project root"
+run = "gradle wrapper --gradle-version 9.1.0 --distribution-type all"
+
+[tasks.test]
+description = "Run the library and sample unit tests"
+# The sample is in here for one file: its MCP client is the only thing in the repo that reads what
+# the server emits, so its tests are what stops a protocol change from being noticed by nobody.
+run = "./gradlew :vitre-core:allTests :vitre-mcp:allTests :sample:composeApp:allTests"
+
+[tasks.build]
+description = "Build library artifacts + Android sample APK + iOS debug framework + desktop jar"
+# The desktop half is only `jvmJar`, deliberately: `packageDistributionForCurrentOS` would build a
+# .dmg/.msi/.deb, which takes minutes and proves nothing this task is for.
+run = """
+./gradlew \
+  :vitre-core:assemble \
+  :vitre-compose:assemble \
+  :vitre-mcp:assemble \
+  :sample:composeApp:linkDebugFrameworkIosSimulatorArm64 \
+  :sample:androidApp:assembleDebug \
+  :sample:desktopApp:jvmJar
+"""
+
+[tasks."android:install"]
+description = "Install the sample androidApp on a connected device or running emulator"
+run = "./gradlew :sample:androidApp:installDebug"
+
+[tasks.clean]
+description = "Clean all Gradle outputs"
+run = "./gradlew clean"
+
+[tasks.lint]
+description = "Check Kotlin code style with ktlint"
+run = 'ktlint "**/*.kt" "**/*.kts" "!**/build/**" "!**/.gradle/**"'
+
+[tasks.fmt]
+description = "Auto-format Kotlin code with ktlint"
+run = 'ktlint --format "**/*.kt" "**/*.kts" "!**/build/**" "!**/.gradle/**"'
+
+[tasks."fmt:check"]
+description = "Check Kotlin formatting without modifying files"
+run = 'ktlint "**/*.kt" "**/*.kts" "!**/build/**" "!**/.gradle/**"'
+
+[tasks."pre-commit"]
+description = "Run pre-commit checks via prek"
+run = "prek run --show-diff-on-failure --color=always --all-files --hook-stage=manual"
