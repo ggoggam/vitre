@@ -1,5 +1,9 @@
 package dev.ggoggam.vitre.mcp
 
+import dev.ggoggam.vitre.agent.PageDriver
+import dev.ggoggam.vitre.agent.PageToolDocs
+import dev.ggoggam.vitre.agent.session.SessionLeases
+import dev.ggoggam.vitre.agent.session.WebViewSessions
 import dev.ggoggam.vitre.mcp.protocol.Era
 import dev.ggoggam.vitre.mcp.protocol.FALLBACK_LEGACY_VERSION
 import dev.ggoggam.vitre.mcp.protocol.JsonRpcErrors
@@ -14,8 +18,6 @@ import dev.ggoggam.vitre.mcp.protocol.jsonRpcResult
 import dev.ggoggam.vitre.mcp.protocol.obj
 import dev.ggoggam.vitre.mcp.protocol.objOrEmpty
 import dev.ggoggam.vitre.mcp.protocol.string
-import dev.ggoggam.vitre.mcp.session.SessionLeases
-import dev.ggoggam.vitre.mcp.session.WebViewSessions
 import dev.ggoggam.vitre.mcp.tools.WebViewTools
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -30,25 +32,14 @@ import kotlinx.serialization.json.putJsonObject
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.cancellation.CancellationException
 
-/** What the model is told this server is for, once, before it calls anything. */
-private val INSTRUCTIONS =
-    """
-    Drives a WebView inside a mobile app: the app's own embedded browser, not a desktop one.
-
-    Look before you act. Call `snapshot` to see the page as a list of elements, each with a `ref`
-    handle, and act on those handles. Do not guess CSS selectors for a page you have not looked at —
-    a selector that matches nothing makes most actions fail, and the ones that would silently do
-    nothing are guarded so they fail too.
-
-    Handles belong to the document that issued them. Anything that replaces the page — `navigate`, a
-    click that follows a link — invalidates every ref, and using a stale one is an error rather than
-    a wrong element. Take a fresh snapshot after such a step.
-
-    You are not the only caller. The app's own UI and any workflow it runs share this WebView, and
-    single operations are ordered against each other but sequences are not. When a later call depends
-    on what an earlier one left on screen, hold the page with `acquire_lease` and pass the lease id,
-    then `release_lease`.
-    """.trimIndent()
+/**
+ * What the model is told this server is for, once, before it calls anything.
+ *
+ * Shared with every other adapter — a Koog host puts the same text in its system prompt — so that
+ * an agent meeting Vitre through one of them has not been told something different about handles,
+ * guessed selectors or leases than an agent meeting it through the other.
+ */
+private val INSTRUCTIONS = PageToolDocs.INSTRUCTIONS.trim()
 
 /**
  * An MCP server over one or more WebViews.
@@ -83,8 +74,13 @@ class McpServer(
     engineContext: CoroutineContext = Dispatchers.Default,
 ) {
     private val serverInfo = ServerInfo(name, version)
-    private val leases = SessionLeases(scope)
-    private val tools = WebViewTools(sessions, leases, engineContext)
+
+    /**
+     * The page semantics, shared with every other adapter. This server owns the protocol around
+     * them and nothing below it — see [WebViewTools].
+     */
+    val driver: PageDriver = PageDriver(sessions, SessionLeases(scope), engineContext)
+    private val tools = WebViewTools(driver)
 
     /**
      * Handles one message, returning the reply as JSON text, or null if none is owed.

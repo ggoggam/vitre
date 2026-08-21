@@ -31,9 +31,10 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
-            // api: a host registers its own WebViewController with the session registry, so the
-            // core types are part of this module's surface rather than an implementation detail.
-            api(project(":vitre-core"))
+            // api: a host registers its own WebViewController with the session registry, and the
+            // tools hand back core's snapshots, so both modules' types are part of this one's
+            // surface rather than an implementation detail.
+            api(project(":vitre-agent"))
             implementation(libs.kotlinx.serialization.json)
         }
         commonTest.dependencies {

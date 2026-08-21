@@ -1,4 +1,4 @@
-package dev.ggoggam.vitre.mcp.session
+package dev.ggoggam.vitre.agent.session
 
 import dev.ggoggam.vitre.core.webview.ExclusiveAccess
 import dev.ggoggam.vitre.core.webview.WebViewController
@@ -18,6 +18,18 @@ const val DEFAULT_LEASE_TTL_MS: Long = 30_000L
 
 /** How long `acquire_lease` waits to be handed the WebView before giving up. */
 const val DEFAULT_LEASE_ACQUIRE_TIMEOUT_MS: Long = 15_000L
+
+/** The shortest lease worth granting: below this the claim expires before the caller can use it. */
+const val MIN_LEASE_TTL_MS: Long = 1_000L
+
+/**
+ * The longest a caller may hold a WebView.
+ *
+ * Enforced here rather than only in [PageDriver.acquireLease] because the whole point of the TTL is
+ * to defend the page against a caller that stops, and a bound that only one of the two entry points
+ * applies is not a bound.
+ */
+const val MAX_LEASE_TTL_MS: Long = 600_000L
 
 /**
  * A claim on one session held across several tool calls.
@@ -44,6 +56,8 @@ class SessionLease internal constructor(
      * the lock per-operation — silently losing the very atomicity the lease exists to give.
      */
     val controller: WebViewController,
+    /** The TTL actually applied, after clamping into [MIN_LEASE_TTL_MS]..[MAX_LEASE_TTL_MS]. */
+    val ttlMs: Long,
     private val granted: CompletableDeferred<ExclusiveAccess>,
     private val released: CompletableDeferred<Unit>,
 ) {
@@ -78,20 +92,27 @@ class SessionLease internal constructor(
  *
  * The holding is done by a coroutine parked inside `WebViewController.exclusively`, which is the
  * only way to keep a lock across calls that each arrive on a coroutine of their own. That parked
- * coroutine is also where the expiry lives, and it has to live somewhere: an MCP client can crash
- * between `acquire_lease` and `release_lease`, and a WebView held forever by a client that no longer
- * exists is worse than any interleaving the lease was preventing. `vitre-core` deliberately
- * does not impose this bound — it has no notion of a client that can go away.
+ * coroutine is also where the expiry lives, and it has to live somewhere: an agent can stop between
+ * acquiring a lease and releasing it — its process dies, its LLM call times out, a user cancels the
+ * run — and a WebView held forever by a caller that no longer exists is worse than any interleaving
+ * the lease was preventing. `vitre-core` deliberately does not impose this bound: it has no notion
+ * of a client that can go away.
  */
-internal class SessionLeases(
+class SessionLeases(
     private val scope: CoroutineScope,
 ) {
     private val state = MutableStateFlow<Map<String, SessionLease>>(emptyMap())
 
     val active: Map<String, SessionLease> get() = state.value
 
+    /** Whether [id] still names a live claim, rather than one expired or already released. */
+    fun isActive(id: String): Boolean = id in state.value
+
     /**
      * Takes the WebView and holds it until released or [ttlMs] elapses.
+     *
+     * [ttlMs] is clamped into [MIN_LEASE_TTL_MS]..[MAX_LEASE_TTL_MS]: an unbounded lease lets a
+     * caller that has stopped wedge the page for days, and `0` would return one already dead.
      *
      * @throws LeaseException if the WebView could not be claimed within [acquireTimeoutMs] — which
      *   means somebody else is holding it, since an unheld lock is taken without suspending.
@@ -101,10 +122,11 @@ internal class SessionLeases(
         ttlMs: Long = DEFAULT_LEASE_TTL_MS,
         acquireTimeoutMs: Long = DEFAULT_LEASE_ACQUIRE_TIMEOUT_MS,
     ): SessionLease {
+        val clamped = ttlMs.coerceIn(MIN_LEASE_TTL_MS, MAX_LEASE_TTL_MS)
         val id = "lease_" + Random.nextLong().toULong().toString(HEX_RADIX)
         val granted = CompletableDeferred<ExclusiveAccess>()
         val released = CompletableDeferred<Unit>()
-        val lease = SessionLease(id, session.id, session.controller, granted, released)
+        val lease = SessionLease(id, session.id, session.controller, clamped, granted, released)
 
         // Registered before the holder is launched, so the holder's own cleanup cannot run before
         // the entry it removes exists and leave a lease nobody can release.
@@ -114,7 +136,7 @@ internal class SessionLeases(
                 try {
                     session.controller.exclusively { access ->
                         granted.complete(access)
-                        withTimeoutOrNull(ttlMs) { released.await() }
+                        withTimeoutOrNull(clamped) { released.await() }
                     }
                 } catch (cancellation: CancellationException) {
                     throw cancellation
@@ -137,7 +159,18 @@ internal class SessionLeases(
             )
         }
 
-        val outcome = withTimeoutOrNull(acquireTimeoutMs) { runCatching { granted.await() } }
+        val outcome =
+            try {
+                withTimeoutOrNull(acquireTimeoutMs) { runCatching { granted.await() } }
+            } catch (interrupted: Throwable) {
+                // The *caller* went away while waiting to be handed the lock. The holder runs on the
+                // host's scope rather than the caller's, so nothing else would stop it: it would go
+                // on to take the lock and park there for the whole TTL, holding the user's WebView
+                // for an id that was never returned to anybody.
+                holder.cancel()
+                state.update { it - id }
+                throw interrupted
+            }
         if (outcome == null || outcome.isFailure) {
             holder.cancel()
             state.update { it - id }

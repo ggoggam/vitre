@@ -41,8 +41,10 @@ dependencyResolutionManagement {
 }
 
 include(":vitre-core")
+include(":vitre-agent")
 include(":vitre-compose")
 include(":vitre-mcp")
+include(":vitre-koog")
 include(":sample:composeApp")
 include(":sample:androidApp")
 include(":sample:desktopApp")

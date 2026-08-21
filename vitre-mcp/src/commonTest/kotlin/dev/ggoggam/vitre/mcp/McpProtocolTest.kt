@@ -1,6 +1,6 @@
 package dev.ggoggam.vitre.mcp
 
-import dev.ggoggam.vitre.mcp.session.WebViewSessions
+import dev.ggoggam.vitre.agent.session.WebViewSessions
 import dev.ggoggam.vitre.mcp.testing.McpTestClient
 import dev.ggoggam.vitre.mcp.testing.errorCode
 import dev.ggoggam.vitre.mcp.testing.errorObject

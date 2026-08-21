@@ -1,4 +1,4 @@
-package dev.ggoggam.vitre.mcp.session
+package dev.ggoggam.vitre.agent.session
 
 import dev.ggoggam.vitre.core.webview.WebViewController
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -6,7 +6,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
-/** A WebView the server can drive, under the name a tool call will ask for it by. */
+/** A WebView an agent can drive, under the name a tool call will ask for it by. */
 data class WebViewSession(
     val id: String,
     val controller: WebViewController,
@@ -22,6 +22,10 @@ data class WebViewSession(
  * `vitre-core` on purpose: core hands a controller to whoever mounted the composable and has no
  * opinion about naming it, which is right for a library that a single-WebView app embeds without
  * ever seeing this module.
+ *
+ * It is not MCP's registry, though MCP was the first thing to need it. Every way of letting an agent
+ * at a page — MCP tools, Koog tools, whatever comes next — has the same stateless-call-to-stateful-
+ * WebView problem, and solving it once per protocol is how two solutions drift.
  *
  * Hosts register from wherever they build the WebView — a Compose `onControllerReady`, an activity,
  * a view model — so registration must not suspend. The map therefore lives in a [MutableStateFlow]:

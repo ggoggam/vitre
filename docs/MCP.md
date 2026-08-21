@@ -70,7 +70,9 @@ operator binds loosely at the top level of any locator expression, which can.
 ## Sessions
 
 MCP is stateless by design — a server may not infer anything from an earlier message on the same
-connection — and a WebView is nothing but state. `WebViewSessions` is the join:
+connection — and a WebView is nothing but state. `WebViewSessions` is the join. It lives in
+`vitre-agent` rather than here, because every way of letting an agent at a page has the same
+problem — see [KOOG.md](KOOG.md):
 
 ```kotlin
 object AppMcp {
@@ -109,10 +111,13 @@ it queues — the holder is uninterrupted, not privileged.
 
 Mechanically, core gained `WebViewController.exclusively`, which holds the ordering lock for a block
 and puts proof of that in the coroutine context so calls inside it do not deadlock against
-themselves. The MCP module parks a coroutine inside one and hands the claim to each arriving tool
-call. **The expiry lives here rather than in core**: an MCP client can crash between acquire and
+themselves. `SessionLeases` parks a coroutine inside one and hands the claim to each arriving tool
+call. **The expiry lives there rather than in core**: a client can crash between acquire and
 release, and a WebView held forever by a client that no longer exists is worse than any interleaving
 the lease was preventing. Core has no notion of a client that can go away, so it imposes no deadline.
+
+A Koog agent can skip the tool entirely: `VitrePageLease` takes the lease for the length of a run
+and threads it into every call as metadata the model never sees. See [KOOG.md](KOOG.md).
 
 ## The tools
 
@@ -121,6 +126,11 @@ tidiness: this library already had two implementations of "talk to a WebView", t
 actuals, and they drifted until a boolean meant `true` on one and `"1"` on the other. A second
 implementation of the step vocabulary reachable only through an agent would drift the same way and
 be harder to notice.
+
+The same argument is why the tools here are thin. Each reads its arguments out of JSON and calls
+`PageDriver` in `vitre-agent`; the steps a click expands to, the bounds a timeout is clamped to, and
+the sentence a model is shown about guessing selectors all live there, shared with the Koog adapter.
+What belongs to this module is the protocol and nothing under it.
 
 | Tool | Notes |
 |---|---|

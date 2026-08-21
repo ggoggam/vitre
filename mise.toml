@@ -11,7 +11,25 @@ run = "gradle wrapper --gradle-version 9.1.0 --distribution-type all"
 description = "Run the library and sample unit tests"
 # The sample is in here for one file: its MCP client is the only thing in the repo that reads what
 # the server emits, so its tests are what stops a protocol change from being noticed by nobody.
-run = "./gradlew :vitre-core:allTests :vitre-mcp:allTests :sample:composeApp:allTests"
+# `compileAndroidDeviceTest` because nothing else type-checks that source set: `test:android` needs
+# hardware and so never runs in CI, and the on-device test is the most fragile file in the repo — it
+# subclasses Koog's `Tool` and leans on the dependency exclusions in vitre-koog/build.gradle.kts. A
+# Koog bump that breaks it should turn CI red, not wait for somebody to plug in a phone.
+run = """
+./gradlew \
+  :vitre-core:allTests \
+  :vitre-agent:allTests \
+  :vitre-mcp:allTests \
+  :vitre-koog:allTests \
+  :vitre-koog:compileAndroidDeviceTest \
+  :sample:composeApp:allTests
+"""
+
+[tasks."test:android"]
+description = "Run the on-device Koog agent test on a connected device or emulator"
+# Separate from `test` because it needs hardware: it is the only test in the repo that drives a real
+# WebView, which is the only way to check that the agent tools and the platform actually meet.
+run = "./gradlew :vitre-koog:connectedAndroidDeviceTest"
 
 [tasks.build]
 description = "Build library artifacts + Android sample APK + iOS debug framework + desktop jar"
@@ -21,7 +39,9 @@ run = """
 ./gradlew \
   :vitre-core:assemble \
   :vitre-compose:assemble \
+  :vitre-agent:assemble \
   :vitre-mcp:assemble \
+  :vitre-koog:assemble \
   :sample:composeApp:linkDebugFrameworkIosSimulatorArm64 \
   :sample:androidApp:assembleDebug \
   :sample:desktopApp:jvmJar

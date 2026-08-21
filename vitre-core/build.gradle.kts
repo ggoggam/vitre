@@ -68,6 +68,12 @@ kotlin {
         }
         androidMain.dependencies {
             implementation(libs.androidx.webkit)
+            // Dispatchers.Main — what WebViewDispatcher confines every WebView call to, and the
+            // Android counterpart of the Swing dependency below. An app usually has it already,
+            // through Compose or lifecycle, which is why its absence stays hidden until something
+            // depends on this module alone: then `Dispatchers.Main.immediate` throws
+            // "Module with the Main dispatcher is missing" on the first navigate.
+            implementation(libs.kotlinx.coroutines.android)
         }
         jvmMain.dependencies {
             // api, not implementation: a desktop host has to hand the pool the `KCEFClient` it

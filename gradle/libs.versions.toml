@@ -11,6 +11,9 @@ androidx-lifecycle = "2.9.6"
 androidx-webkit = "1.15.0"
 coroutines = "1.10.2"
 kcef = "2024.04.20.4"
+koog = "1.1.1"
+androidx-test = "1.7.0"
+androidx-test-junit = "1.3.0"
 serialization = "1.9.0"
 
 [libraries]
@@ -19,6 +22,7 @@ kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotl
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 kotlinx-coroutines-swing = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-swing", version.ref = "coroutines" }
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidx-activity" }
@@ -32,6 +36,19 @@ androidx-webkit = { module = "androidx.webkit:webkit", version.ref = "androidx-w
 # `FindClass` before a window appears. This is the version compose-webview-multiplatform ships,
 # and it is paired with a pinned runtime release in sample/desktopApp — the two go together.
 kcef = { module = "dev.datlag:kcef", version.ref = "kcef" }
+
+# Koog, JetBrains' Kotlin agent framework. `agents-core` rather than the `koog-agents` umbrella:
+# the umbrella pulls every LLM client and both A2A transports, and this module needs the tool
+# contract plus the agent pipeline a feature installs into, and nothing else. A host picks its own
+# prompt executor and brings the client that goes with it.
+koog-agents-core = { module = "ai.koog:agents-core", version.ref = "koog" }
+# Koog's own test doubles. Used only by the on-device end-to-end test, which needs a prompt executor
+# that emits a scripted sequence of tool calls: the point of that test is the agent loop and the
+# WebView underneath it, not the model.
+koog-agents-test = { module = "ai.koog:agents-test", version.ref = "koog" }
+
+androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidx-test" }
+androidx-test-junit = { module = "androidx.test.ext:junit", version.ref = "androidx-test-junit" }
 
 compose-runtime = { module = "org.jetbrains.compose.runtime:runtime", version.ref = "composeMultiplatform" }
 compose-foundation = { module = "org.jetbrains.compose.foundation:foundation", version.ref = "composeMultiplatform" }

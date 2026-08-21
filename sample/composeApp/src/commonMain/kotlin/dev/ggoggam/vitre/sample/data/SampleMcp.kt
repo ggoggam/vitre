@@ -1,7 +1,7 @@
 package dev.ggoggam.vitre.sample.data
 
+import dev.ggoggam.vitre.agent.session.WebViewSessions
 import dev.ggoggam.vitre.mcp.McpServer
-import dev.ggoggam.vitre.mcp.session.WebViewSessions
 import dev.ggoggam.vitre.mcp.transport.InProcessMcpTransport
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers

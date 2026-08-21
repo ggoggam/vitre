@@ -1,5 +1,6 @@
 package dev.ggoggam.vitre.mcp.protocol
 
+import dev.ggoggam.vitre.agent.PageToolDocs
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -179,22 +180,22 @@ internal fun kotlinx.serialization.json.JsonObjectBuilder.intProp(
     }
 }
 
-/** The three ways to name an element, shared by every element-addressing tool. */
-internal fun kotlinx.serialization.json.JsonObjectBuilder.locatorProps(prefix: String = "") {
-    stringProp(
-        "${prefix}ref",
-        "Handle from a previous `snapshot` of the current page, e.g. \"e7\". Prefer this: it names " +
-            "an element you have actually seen, and fails loudly if the page has changed under you.",
-    )
-    stringProp(
-        "${prefix}css",
-        "CSS selector. Use only when you know the page's markup — do not guess one; take a " +
-            "`snapshot` and use the `ref` it gives you instead.",
-    )
-    stringProp(
-        "${prefix}xpath",
-        "XPath expression, for what CSS cannot reach: matching on visible text " +
-            "(//button[normalize-space()='Add to cart']), walking up with ancestor::, or " +
-            "selecting an attribute as a node.",
-    )
+/**
+ * The ways to name an element, shared by every element-addressing tool.
+ *
+ * The prose is `vitre-agent`'s, not this module's: it is the prompt a model reads before choosing
+ * between a handle and a guessed selector, and the Koog adapter has to give it the same advice.
+ *
+ * [allowRef] is false where the argument has to match *many* elements — `extract_rows`' row set.
+ * A handle names exactly one, so offering it there advertises an argument whose only effect is a
+ * one-record answer for a forty-row table, with nothing to distinguish that from a page that
+ * really had one result. The Koog adapter has no such argument, so neither does this schema.
+ */
+internal fun kotlinx.serialization.json.JsonObjectBuilder.locatorProps(
+    prefix: String = "",
+    allowRef: Boolean = true,
+) {
+    if (allowRef) stringProp("${prefix}ref", PageToolDocs.REF)
+    stringProp("${prefix}css", PageToolDocs.CSS)
+    stringProp("${prefix}xpath", PageToolDocs.XPATH)
 }
