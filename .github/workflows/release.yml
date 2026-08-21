@@ -1,0 +1,205 @@
+name: Release
+
+# A version bump landing on main is the release. `VERSION_NAME` in gradle.properties is the only
+# place a released version is written down, so a release is a reviewable pull request like any other
+# change — and the thing that goes to Maven Central is the value that was reviewed, not a tag someone
+# typed afterwards. The tag is created *by* this workflow once the publish succeeds; pushing one by
+# hand publishes nothing.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - gradle.properties
+
+permissions:
+  contents: read
+
+env:
+  MISE_ENV: ci
+
+# No cancel-in-progress. A cancelled publish is not a no-op: the upload may already have reached
+# Central, and there is no way to take a released version back. Two bumps merged close together
+# should queue, not race.
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  # gradle.properties holds Kotlin, Gradle, Android and POM settings as well as the version, so most
+  # edits to it are not releases. This job is what tells the two apart, and it is deliberately the
+  # only place that decides: everything downstream is gated on its answer.
+  decide:
+    name: decide
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.check.outputs.release }}
+      version: ${{ steps.check.outputs.version }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Needs the commit before the push to diff against, and the tag list to check against.
+          fetch-depth: 0
+
+      - id: check
+        run: |
+          set -euo pipefail
+          read_version() { sed -n 's/^VERSION_NAME=//p' "$1"; }
+
+          curr=$(read_version gradle.properties)
+          # A force-push, or a first push, leaves nothing to compare against. Treat that as "changed"
+          # and let the tag check below be the thing that stops a re-release.
+          prev=$(git show "${{ github.event.before }}:gradle.properties" 2>/dev/null | sed -n 's/^VERSION_NAME=//p' || true)
+
+          echo "previous: ${prev:-<none>}"
+          echo "current:  ${curr:-<none>}"
+
+          if [ "$curr" = "$prev" ]; then
+            echo "::notice::gradle.properties changed but VERSION_NAME did not — nothing to release"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # The placeholder that means "nothing released yet". Publishing it would burn 0.0.0-LOCAL
+          # on Central for ever, and Central versions cannot be withdrawn, only superseded.
+          case "$curr" in
+            *-LOCAL)
+              echo "::notice::VERSION_NAME is still the $curr placeholder — nothing to release"
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+
+          if ! printf '%s' "$curr" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::VERSION_NAME '$curr' is not MAJOR.MINOR.PATCH[-prerelease]; refusing to publish"
+            exit 1
+          fi
+
+          # Belt and braces for the force-push case above, and for a bump that gets reverted and
+          # reapplied: the tag this workflow pushes after a successful release is the record that
+          # the version has already gone out.
+          if git rev-parse -q --verify "refs/tags/v$curr" >/dev/null; then
+            echo "::error::v$curr is already tagged — that version has been released; bump VERSION_NAME instead"
+            exit 1
+          fi
+
+          # Anything with a prerelease component — 0.3.0-rc.1, 1.0.0-beta.2 — is flagged so the
+          # GitHub release does not display as "Latest" and nobody lands on a release candidate
+          # looking for the current version. The regex above has already established that the only
+          # `-` a valid version can contain is the prerelease separator, so this is exact rather
+          # than a guess at the shape of the suffix. Maven Central gets it either way: the flag is
+          # about presentation on GitHub, not about what is published.
+          case "$curr" in
+            *-*) prerelease=true ;;
+            *)   prerelease=false ;;
+          esac
+
+          echo "::notice::releasing $curr (prerelease=$prerelease)"
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "version=$curr" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+  # The commit has to pass the same suite a PR does before anything leaves the runner. `uses:` rather
+  # than a copy of the job: see the workflow_call comment in ci.yml.
+  test:
+    needs: decide
+    if: needs.decide.outputs.release == 'true'
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: publish
+    needs: [decide, test]
+    if: needs.decide.outputs.release == 'true'
+    # macOS, not ubuntu, and this is not a preference: the library targets iosX64, iosArm64 and
+    # iosSimulatorArm64, and Kotlin/Native can only produce Apple klibs on a Mac. On Linux those
+    # three targets are silently skipped, and the result is a release whose root Gradle module
+    # metadata advertises iOS variants that do not exist — which fails in a consumer's build, not in
+    # this one. macOS can cross-compile every other target, so all five publications come from here.
+    runs-on: macos-latest
+    # Holds the Central Portal token and the signing key. An environment rather than plain repo
+    # secrets so the credentials are reachable from this workflow alone, and so a required reviewer
+    # can be added later without touching this file.
+    environment: maven-central
+    permissions:
+      # To push the tag that records the release. Nothing else here writes to the repository.
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: jdx/mise-action@v3
+
+      # Same reasoning as the test job in ci.yml: every AGP task needs an SDK to be *configured*, so
+      # without one the build dies at task-graph time. macos-latest runners are arm64 and ship no
+      # Android SDK at all, unlike the ubuntu image, so this is load-bearing here rather than a
+      # top-up. compileSdk is read from the version catalog for the same reason as there — the
+      # platform installed cannot drift from the one the build asks for.
+      - name: Resolve Android compileSdk from the version catalog
+        id: android_compile_sdk
+        run: |
+          v=$(sed -n 's/^android-compileSdk[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' gradle/libs.versions.toml)
+          test -n "$v" || { echo "::error::could not parse android-compileSdk from gradle/libs.versions.toml"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platforms;android-${{ steps.android_compile_sdk.outputs.version }}
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            .gradle
+          key: release-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: |
+            release-${{ runner.os }}-
+
+      # ORG_GRADLE_PROJECT_<name> is how Gradle takes a project property from the environment, which
+      # is what the publish plugin reads. Passing them as `-P` flags instead would put the signing
+      # passphrase in the process table and in any command echo. The version is not passed at all —
+      # it is the VERSION_NAME already committed to gradle.properties.
+      #
+      # SIGNING_IN_MEMORY_KEY is the *armoured private key* — `gpg --armor --export-secret-keys
+      # <id>`, newlines and all — not a path and not the public key. SIGNING_IN_MEMORY_KEY_ID is
+      # only needed when the exported ring holds more than one key; an empty secret is harmless.
+      - name: Publish to Maven Central
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_IN_MEMORY_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.SIGNING_IN_MEMORY_KEY_ID }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_IN_MEMORY_KEY_PASSWORD }}
+        run: mise run publish
+
+      # Last, and only on success: the tag is a record of a release that happened. Tagging before
+      # publishing would leave a tag pointing at a version nobody can download if the upload failed,
+      # and `decide` reads these tags to refuse a second release of the same version.
+      - name: Tag the release
+        env:
+          VERSION: ${{ needs.decide.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Lightweight, so there is no committer identity to configure, and pushed with the
+          # credentials actions/checkout already persisted.
+          git tag "v$VERSION" "$GITHUB_SHA"
+          git push origin "v$VERSION"
+
+      # Notes are generated by GitHub from the pull requests merged since the previous tag, so the
+      # release history is whatever the PR titles say and there is no changelog file to keep in step
+      # with it. Runs last for the same reason the tag does: a release entry should only exist for
+      # a version that is actually downloadable.
+      - name: Create the GitHub release
+        env:
+          VERSION: ${{ needs.decide.outputs.version }}
+          PRERELEASE: ${{ needs.decide.outputs.prerelease }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          args=(--title "v$VERSION" --generate-notes)
+          # Written as an `if` rather than `[ ... ] && args+=(...)`: under `set -e` that form aborts
+          # the step when the test is false, because the compound statement itself exits non-zero.
+          if [ "$PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          fi
+          gh release create "v$VERSION" "${args[@]}"
