@@ -35,6 +35,11 @@ Podfile.lock
 jcef-bundle/
 kcef-bundle/
 
+### Secrets ###
+# `mise run test:live` reads ANTHROPIC_API_KEY from the environment. mise.local.toml is tracked, so
+# a key cannot live there — keep it here instead and `source .env.local` before running the task.
+.env.local
+
 ### Logs ###
 # Covers the hs_err_pid*.log a JVM crash leaves behind, which for this project means a CEF one.
 *.log

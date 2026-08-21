@@ -25,6 +25,18 @@ run = """
   :sample:composeApp:allTests
 """
 
+[tasks."test:live"]
+description = "Run the live-LLM Koog test (needs ANTHROPIC_API_KEY)"
+# Separate from `test` because it needs a key, a network and a few cents: it is the only test in the
+# repo that puts a real model in the loop, which is the only way to check that the tool descriptors
+# this module generates are ones a provider accepts and that PageToolDocs actually steers a model.
+# It skips itself with a printed note when the key is absent, and CI does not run it — this task is
+# how you run it deliberately, after changing the tools, their descriptions or the Koog version.
+#
+#   export ANTHROPIC_API_KEY=...   # or: echo 'export ANTHROPIC_API_KEY=...' > .env.local
+#   mise run test:live             #      && source .env.local
+run = './gradlew :vitre-koog:jvmTest -Pvitre.live --tests "*LiveModelDrivesThePageTest*" --rerun'
+
 [tasks."test:android"]
 description = "Run the on-device Koog agent test on a connected device or emulator"
 # Separate from `test` because it needs hardware: it is the only test in the repo that drives a real

@@ -46,6 +46,14 @@ koog-agents-core = { module = "ai.koog:agents-core", version.ref = "koog" }
 # that emits a scripted sequence of tool calls: the point of that test is the agent loop and the
 # WebView underneath it, not the model.
 koog-agents-test = { module = "ai.koog:agents-test", version.ref = "koog" }
+# The one LLM client in the build, and it is test-only on purpose: `vitre-koog` ships no client so
+# that a host picks its own, and the live test in vitre-koog/src/jvmTest is what checks that the
+# tool descriptors this module generates are ones a real provider accepts and a real model can use.
+koog-prompt-executor-anthropic = { module = "ai.koog:prompt-executor-anthropic-client", version.ref = "koog" }
+# Koog resolves its HTTP transport through a service-loader lookup, so a client artifact on its own
+# gets you `No KoogHttpClient.Factory provider found` at the first request rather than a compile
+# error. A host that adds a Koog LLM client needs this — or another Factory provider — alongside it.
+koog-http-client-ktor = { module = "ai.koog:http-client-ktor", version.ref = "koog" }
 
 androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidx-test" }
 androidx-test-junit = { module = "androidx.test.ext:junit", version.ref = "androidx-test-junit" }

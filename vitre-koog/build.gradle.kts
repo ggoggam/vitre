@@ -6,6 +6,33 @@ plugins {
 
 group = "dev.ggoggam.vitre"
 
+// The live test prints why it skipped when there is no key, and a Gradle test task swallows stdout
+// by default — which would turn "skipped, no ANTHROPIC_API_KEY" into a silent pass.
+//
+// The key is forwarded rather than inherited: test workers are children of the Gradle *daemon*, and
+// the daemon keeps the environment it was first started with. Exporting the key in the shell that
+// runs `mise run test:live` therefore does not reach the test — it reaches the client, which is a
+// different process — and the symptom is the test skipping while the shell can see the variable.
+// Read through a provider so the configuration cache treats it as an input and a newly exported key
+// invalidates the cached entry instead of being ignored.
+tasks.withType<Test>().configureEach {
+    testLogging { showStandardStreams = true }
+    environment(
+        "ANTHROPIC_API_KEY",
+        providers.environmentVariable("ANTHROPIC_API_KEY").getOrElse(""),
+    )
+    // Opting in takes a flag, not just a key. `mise run test` runs :vitre-koog:allTests, which owns
+    // jvmTest, so gating the live test on the key alone would mean anyone with ANTHROPIC_API_KEY
+    // exported in their shell — which is most people who have one — silently paying for an LLM run
+    // on every ordinary test. `mise run test:live` passes the flag; nothing else does.
+    if (!providers.gradleProperty("vitre.live").isPresent) {
+        filter {
+            excludeTestsMatching("*LiveModelDrivesThePageTest*")
+            isFailOnNoMatchingTests = false
+        }
+    }
+}
+
 kotlin {
     androidLibrary {
         namespace = "dev.ggoggam.vitre.koog"
@@ -66,6 +93,13 @@ kotlin {
         commonTest.dependencies {
             implementation(libs.kotlin.test)
             implementation(libs.kotlinx.coroutines.test)
+        }
+        // JVM-only, and only for `LiveModelDrivesThePageTest`: a real Anthropic client so that one
+        // test can put an actual model in the loop. Everything else in the module stays clientless —
+        // that is the module's whole contract — and this dependency never leaves `jvmTest`.
+        getByName("jvmTest").dependencies {
+            implementation(libs.koog.prompt.executor.anthropic)
+            implementation(libs.koog.http.client.ktor)
         }
         getByName("androidDeviceTest").dependencies {
             implementation(libs.kotlin.test)

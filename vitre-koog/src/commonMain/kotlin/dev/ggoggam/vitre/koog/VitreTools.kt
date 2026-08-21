@@ -33,6 +33,11 @@ import dev.ggoggam.vitre.koog.tools.WaitForTool
  * )
  * ```
  *
+ * Two things that snippet leaves out, both of which a real model runs into and a mocked one does
+ * not: Koog needs an HTTP transport provider (`ai.koog:http-client-ktor`) on the runtime classpath
+ * beside the LLM client, and the default agent loop ends the run on a message that carries text
+ * *and* a tool call — which Anthropic models routinely send. See `docs/KOOG.md` for both.
+ *
  * @param includeLeaseTools whether the model may take a lease itself. Leave it on for an agent that
  *   shares the WebView with a UI and knows when its own sequences must not be interrupted; turn it
  *   off when [dev.ggoggam.vitre.koog.feature.VitrePageLease] is installed, since the run then

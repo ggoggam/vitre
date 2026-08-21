@@ -26,6 +26,45 @@ agent.run("Find the cheapest wireless keyboard and tell me the delivered price."
 `PageDriver` is the page; `ToolRegistry` is Koog's. Nothing else is needed, and no MCP server is
 involved.
 
+Two things the snippet does not show, both found by
+`vitre-koog/src/jvmTest/.../LiveModelDrivesThePageTest.kt`, which runs this against a real model:
+
+**An LLM client is not enough on its own.** Koog resolves its HTTP transport through a service-loader
+lookup, so a build with `prompt-executor-anthropic-client` and nothing else compiles and then fails
+at the first request with `No KoogHttpClient.Factory provider found`. Add `ai.koog:http-client-ktor`
+(or another Factory provider) alongside whichever client you pick.
+
+**The default strategy stops early on a model that narrates.** Anthropic models routinely answer with
+one message holding both a text part and a tool call — `[Text("I'll search now."), Tool.Call(type)]`.
+The default `AIAgent(promptExecutor, llmModel, …)` loop above takes the text branch on such a message
+once tool results are already in the history, so the run ends after the *first* tool call and
+delivers "I'll search now." as the final answer. Driving the same prompt and the same tools by hand
+shows the model completing the whole task, so this is the graph's branch order rather than the model,
+the tools or [`PageToolDocs`](../vitre-agent/src/commonMain/kotlin/dev/ggoggam/vitre/agent/PageToolDocs.kt).
+
+Give it a loop that checks tool calls before text at both branch points:
+
+```kotlin
+val pageStrategy = strategy<String, String>("vitre-page") {
+    val request by nodeLLMRequest()
+    val runTools by nodeExecuteTools()
+    val sendResults by nodeLLMSendToolResults()
+
+    edge(nodeStart forwardTo request)
+    edge(request forwardTo runTools onToolCalls { true })
+    edge(request forwardTo nodeFinish onTextMessage { true })
+    edge(runTools forwardTo sendResults)
+    edge(sendResults forwardTo runTools onToolCalls { true })   // <- before the text edge
+    edge(sendResults forwardTo nodeFinish onTextMessage { true })
+}
+
+val agent = AIAgent(executor, model, pageStrategy, systemPrompt = PageToolDocs.INSTRUCTIONS, …)
+```
+
+With the default loop the live test drove the page once and stopped; with this one it takes a
+snapshot, types, clicks, snapshots again and reads the results table — ten page operations rather
+than one.
+
 ## Why the semantics do not live in this module
 
 `vitre-mcp` opens with the reason its tools build `WorkflowStep`s rather than generating their own
