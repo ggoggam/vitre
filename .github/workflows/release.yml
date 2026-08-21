@@ -161,14 +161,22 @@ jobs:
       # it is the VERSION_NAME already committed to gradle.properties.
       #
       # SIGNING_IN_MEMORY_KEY is the *armoured private key* — `gpg --armor --export-secret-keys
-      # <id>`, newlines and all — not a path and not the public key. SIGNING_IN_MEMORY_KEY_ID is
-      # only needed when the exported ring holds more than one key; an empty secret is harmless.
+      # <id>`, newlines and all — not a path and not the public key.
+      #
+      # There is deliberately no signingInMemoryKeyId here, and adding one back is a trap. A secret
+      # that does not exist still renders as an empty string, and an empty
+      # ORG_GRADLE_PROJECT_signingInMemoryKeyId is not the same as an unset one: Gradle reads the
+      # property as *present* and passes "" to PgpKeyId, which accepts only 8 hex characters and
+      # aborts the build with "Could not read PGP secret key" — the same message it prints for a
+      # mangled key and for a wrong passphrase, with the actual cause visible only under
+      # --stacktrace. Given no id, Gradle signs with the first key in the ring, which is the only
+      # key we export. Set it only if the ring ever holds a second signing key, and then as the
+      # 8-character short id (0A1B2C3D) — not the 16-character long id and not the fingerprint.
       - name: Publish to Maven Central
         env:
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_IN_MEMORY_KEY }}
-          ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.SIGNING_IN_MEMORY_KEY_ID }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_IN_MEMORY_KEY_PASSWORD }}
         run: mise run publish
 
