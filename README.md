@@ -63,6 +63,22 @@ codebase for every platform, and a snapshot format an agent can read.
 > **Web target is out of scope.** Browser CORS rules make a general-purpose web automation framework
 > impractical there; see [docs/PLAN.md](docs/PLAN.md).
 
+## What it looks like
+
+The sample gallery on Android. The same screens run on iOS and the desktop from the same
+`composeApp`; past 720dp wide the list and the runner sit side by side instead of taking turns.
+
+| | |
+|---|---|
+| <img src="docs/images/gallery.png" alt="The Vitre gallery index" width="420"> | <img src="docs/images/workflow-run.png" alt="A completed workflow and its step trace" width="420"> |
+| **The index.** The agent chat, the parallel-lane scenarios, then one card per single-page workflow. | **A workflow, run.** The page on top, every step underneath with what it actually did — steps 4 and 5 address elements by the handles `Snapshot` issued, not by selectors. |
+| <img src="docs/images/price-scout.png" alt="Price scout comparing four shops by delivered price" width="420"> | <img src="docs/images/agent-chat.png" alt="The agent chat showing an MCP tool result and the answer derived from it" width="420"> |
+| **Price scout.** Four cross-origin shops searched at once. This device offered two lanes, so four tasks ran two deep — and the ranking is by *delivered* price, which puts the $69.99 sticker third. | **Agent chat.** A mocked model over a real MCP server: each action on the page is a `tools/call`, shown with the JSON that came back rather than hidden behind the answer. |
+
+What each entry demonstrates is spelled out in
+[What's in the sample gallery](#whats-in-the-sample-gallery); to run it yourself, see
+[Running the sample](#running-the-sample).
+
 ## Requirements
 
 | | |
