@@ -2,9 +2,9 @@ plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.android.kmp.library)
     alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.maven.publish)
+    alias(libs.plugins.dokka)
 }
-
-group = "dev.ggoggam.vitre"
 
 // The live test prints why it skipped when there is no key, and a Gradle test task swallows stdout
 // by default — which would turn "skipped, no ANTHROPIC_API_KEY" into a silent pass.

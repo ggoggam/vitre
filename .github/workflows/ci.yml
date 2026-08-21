@@ -6,6 +6,15 @@ on:
       - main
   pull_request:
   merge_group:
+  # So release.yml can gate a Maven Central publish on these exact jobs rather than keeping a second
+  # copy of them that drifts. Maven Central is immutable — a version published from a red commit
+  # cannot be withdrawn, only superseded — so the commit being released has to prove itself.
+  #
+  # A version bump merged to main therefore runs this workflow twice, once from the push above and
+  # once through release.yml. That is the intended trade: the alternative is a `workflow_run`
+  # trigger, which cannot be path-filtered and resolves its workflow file from the default branch
+  # rather than the commit, in exchange for saving one CI run on the rare occasion a release happens.
+  workflow_call:
 
 permissions:
   contents: read
@@ -29,9 +38,9 @@ jobs:
       # mise-action's own cache is keyed on the config files it reads, which is what we want
       # here, so unlike the monorepo this uses it directly instead of caching ~/.local/share/mise
       # by hand.
-      - uses: jdx/mise-action@v3
+      - uses: jdx/mise-action@v4
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cache/prek
@@ -54,7 +63,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: jdx/mise-action@v3
+      - uses: jdx/mise-action@v4
 
       # Every AGP task needs an SDK just to be *configured* — without one Gradle dies at
       # task-graph time with "SDK location not found", before a single test runs.
@@ -78,7 +87,7 @@ jobs:
         with:
           packages: platforms;android-${{ steps.android_compile_sdk.outputs.version }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.gradle/caches

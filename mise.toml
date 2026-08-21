@@ -62,6 +62,35 @@ run = """
   :sample:desktopApp:jvmJar
 """
 
+[tasks.publish]
+description = "Publish the five library modules to Maven Central (CI only — needs credentials and a signing key)"
+# One Gradle invocation for all five modules on purpose: the publish plugin funnels every module's
+# artifacts into a single Central Portal deployment, so the release is atomic — either all of
+# vitre-core, -compose, -agent, -mcp and -koog appear at this version, or none do. Running the task
+# per module would stage five separate deployments and a failure halfway through would leave a
+# half-published version that Central will not let anyone take back.
+#
+# `publishAndReleaseToMavenCentral` rather than `publishToMavenCentral` plus
+# `mavenCentralAutomaticPublishing=true`: same effect, but the intent is at the call site instead of
+# buried in gradle.properties, and the sibling task stays available for a dry run.
+#
+# No version is passed. VERSION_NAME in gradle.properties is the released version — changing it on
+# main is what triggers the workflow that runs this task — so there is nothing to plumb through and
+# no second value that could disagree with the committed one.
+run = "./gradlew publishAndReleaseToMavenCentral"
+
+[tasks."publish:local"]
+description = "Publish the library modules to ~/.m2 to try them from another project"
+# Signing off. It is on globally because Maven Central rejects an unsigned artifact, and it is not
+# waived for the local repo — a bare `publishToMavenLocal` fails with "no configured signatory" on a
+# machine without a GPG key, which is most of them. Nothing consumes a ~/.m2 signature, so turning it
+# off here costs nothing and keeps this task usable by anyone.
+#
+# The version is whatever VERSION_NAME says, so between releases this overwrites the ~/.m2 copy of
+# the last released version with your working tree. That is usually what you want when you are
+# testing a change from another project; pass `-PVERSION_NAME=...` when it is not.
+run = "./gradlew publishToMavenLocal -PsignAllPublications=false"
+
 [tasks."android:install"]
 description = "Install the sample androidApp on a connected device or running emulator"
 run = "./gradlew :sample:androidApp:installDebug"

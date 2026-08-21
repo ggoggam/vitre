@@ -15,6 +15,8 @@ koog = "1.1.1"
 androidx-test = "1.7.0"
 androidx-test-junit = "1.3.0"
 serialization = "1.9.0"
+mavenPublish = "0.33.0"
+dokka = "2.2.0"
 
 [libraries]
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
@@ -73,3 +75,11 @@ kotlin-multiplatform  = { id = "org.jetbrains.kotlin.multiplatform",        vers
 kotlin-serialization  = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 compose-multiplatform = { id = "org.jetbrains.compose",                     version.ref = "composeMultiplatform" }
 compose-compiler      = { id = "org.jetbrains.kotlin.plugin.compose",       version.ref = "kotlin" }
+# Publishing. The Central Portal API, the KMP publication layout (a root module plus one per
+# target), signing and the javadoc jar are all things this plugin already knows; hand-rolling
+# them on `maven-publish` is a few hundred lines that go stale the next time Central changes.
+maven-publish         = { id = "com.vanniktech.maven.publish",              version.ref = "mavenPublish" }
+# Applied only so the publish plugin finds it: with `org.jetbrains.dokka` present it wires
+# `dokkaGeneratePublicationHtml` into the javadoc jar Central requires, instead of shipping the
+# empty stub it falls back to. Nothing in the build calls a Dokka task by hand.
+dokka                 = { id = "org.jetbrains.dokka",                       version.ref = "dokka" }

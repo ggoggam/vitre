@@ -91,8 +91,11 @@ What each entry demonstrates is spelled out in
 
 ## Installation
 
-Not published to Maven Central yet. For now, consume it as a source dependency — clone the repo
-next to your project and include it from `settings.gradle.kts`:
+Nothing has been released yet — publishing to Maven Central is wired up and goes out the first time
+`VERSION_NAME` in `gradle.properties` is bumped off its placeholder on `main` (see
+[Releasing](#releasing)), at which point the coordinates below take a version and work as written.
+Until then, consume it as a source dependency: clone the repo next to your project and include it
+from `settings.gradle.kts`:
 
 ```kotlin
 includeBuild("../vitre")
@@ -453,6 +456,55 @@ waits for `window.vitre.postMessage`, and no third-party site will ever call it 
 double as the smoke test, since a failure means the library broke rather than that a website was
 redesigned. The other two hit the live web to show the same steps against real pages, and are the
 ones that will eventually rot.
+
+### Releasing
+
+`VERSION_NAME` in `gradle.properties` is the released version, and the only place it is written
+down. Changing it on `main` *is* the release — so a release is a reviewable pull request like
+anything else, and what reaches Maven Central is the value someone approved:
+
+```diff
+ # gradle.properties
+-VERSION_NAME=0.1.0
++VERSION_NAME=0.2.0
+```
+
+Merging that fires [`.github/workflows/release.yml`](.github/workflows/release.yml), which runs the
+full CI suite against the merge commit, publishes all five library modules to Maven Central as one
+atomic deployment, releases it — no button to press afterwards — and only then tags the commit
+`v0.2.0` and opens a GitHub release for it, with notes generated from the pull requests merged since
+the last one. The tag is a record of a release that happened, not the thing that caused it; pushing
+one by hand publishes nothing.
+
+A version with a prerelease component — `0.3.0-rc.1`, `1.0.0-beta.2` — publishes to Maven Central
+like any other, but its GitHub release is flagged so it does not show up as *Latest*.
+
+`gradle.properties` also holds Kotlin, Gradle, Android and POM settings, so most edits to it are not
+releases. The workflow diffs `VERSION_NAME` against the previous commit and exits quietly when it
+has not moved. It refuses outright — before Gradle starts — on a malformed version, on the
+`0.0.0-LOCAL` placeholder, and on any version already tagged, because a Maven Central version can be
+superseded but never withdrawn.
+
+It publishes from macOS because the iOS targets need it: Kotlin/Native only builds Apple klibs on a
+Mac, and on Linux they are skipped silently rather than reported, which would ship module metadata
+advertising variants that are not there.
+
+Publishing needs four secrets on the repository's `maven-central` environment — a
+[Central Portal](https://central.sonatype.com/) user token for the verified `dev.ggoggam` namespace,
+and a GPG key to sign with:
+
+| Secret | What it is |
+|---|---|
+| `MAVEN_CENTRAL_USERNAME` / `MAVEN_CENTRAL_PASSWORD` | Central Portal user token, from Account → Generate User Token. Not the portal login. |
+| `SIGNING_IN_MEMORY_KEY` | The armoured private key: `gpg --armor --export-secret-keys <key-id>`, newlines included. |
+| `SIGNING_IN_MEMORY_KEY_PASSWORD` | That key's passphrase. |
+| `SIGNING_IN_MEMORY_KEY_ID` | Only needed if the exported ring holds more than one key; leave unset otherwise. |
+
+The public half has to be on a keyserver Central checks (`gpg --keyserver keyserver.ubuntu.com
+--send-keys <key-id>`), or validation rejects every signature.
+
+To try the modules from another project without releasing anything, `mise run publish:local` puts
+them in `~/.m2` at whatever `VERSION_NAME` currently says.
 
 ## Documentation
 
