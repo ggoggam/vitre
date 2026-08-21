@@ -91,31 +91,25 @@ What each entry demonstrates is spelled out in
 
 ## Installation
 
-Nothing has been released yet — publishing to Maven Central is wired up and goes out the first time
-`VERSION_NAME` in `gradle.properties` is bumped off its placeholder on `main` (see
-[Releasing](#releasing)), at which point the coordinates below take a version and work as written.
-Until then, consume it as a source dependency: clone the repo next to your project and include it
-from `settings.gradle.kts`:
-
-```kotlin
-includeBuild("../vitre")
-```
+Published to Maven Central, so `mavenCentral()` in your repositories is all the setup there is:
 
 ```kotlin
 // build.gradle.kts
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            implementation("dev.ggoggam.vitre:vitre-core")
-            implementation("dev.ggoggam.vitre:vitre-compose") // optional
-            implementation("dev.ggoggam.vitre:vitre-mcp")     // optional
-            implementation("dev.ggoggam.vitre:vitre-koog")    // optional
+            implementation("dev.ggoggam.vitre:vitre-core:0.1.0")
+            implementation("dev.ggoggam.vitre:vitre-compose:0.1.0") // optional
+            implementation("dev.ggoggam.vitre:vitre-mcp:0.1.0")     // optional
+            implementation("dev.ggoggam.vitre:vitre-koog:0.1.0")    // optional
         }
     }
 }
 ```
 
-Or add the modules directly with `include(":vitre-core")` if you vendor the sources.
+Or consume it as a source dependency — clone the repo next to your project, add
+`includeBuild("../vitre")` to `settings.gradle.kts` and drop the versions above — or add the modules
+directly with `include(":vitre-core")` if you vendor the sources.
 
 ## Quick start
 
