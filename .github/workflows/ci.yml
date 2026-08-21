@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+# Makes mise also load mise.ci.toml, which is where the JDK the Gradle and ktlint tasks need
+# is declared. Without this the file is ignored and the runner's default JDK is used.
+env:
+  MISE_ENV: ci
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pre-commit:
+    name: pre-commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # mise-action's own cache is keyed on the config files it reads, which is what we want
+      # here, so unlike the monorepo this uses it directly instead of caching ~/.local/share/mise
+      # by hand.
+      - uses: jdx/mise-action@v3
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/prek
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml', 'gradle/libs.versions.toml') }}
+          restore-keys: |
+            pre-commit-${{ runner.os }}-
+
+      # The ktlint hook runs `mise run fmt`, which rewrites files. prek fails any hook that
+      # modifies the tree and --show-diff-on-failure prints what it changed, so a badly
+      # formatted PR turns the job red with the fix in the log — no auto-commit bot needed
+      # (and none would work from a fork anyway).
+      - name: Run pre-commit checks
+        run: mise run pre-commit
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: jdx/mise-action@v3
+
+      # Every AGP task needs an SDK just to be *configured* — without one Gradle dies at
+      # task-graph time with "SDK location not found", before a single test runs.
+      # Must come after mise-action: sdkmanager is a Java program and the JDK comes from
+      # mise.ci.toml.
+      #
+      # compileSdk is read out of the version catalog rather than spelled here so the platform
+      # installed can't drift from the one the build asks for. Only that platform is installed:
+      # AGP fetches the matching build-tools itself (android.builder.sdkDownload, on by default)
+      # once setup-android has accepted the licences, and platform-tools — the action's default,
+      # adb and friends — is for talking to devices, which no CI job does.
+      - name: Resolve Android compileSdk from the version catalog
+        id: android_compile_sdk
+        run: |
+          v=$(sed -n 's/^android-compileSdk[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' gradle/libs.versions.toml)
+          test -n "$v" || { echo "::error::could not parse android-compileSdk from gradle/libs.versions.toml"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platforms;android-${{ steps.android_compile_sdk.outputs.version }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            .gradle
+          key: test-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: |
+            test-${{ runner.os }}-
+
+      # `mise run test` covers the library modules plus the sample's MCP client tests. The
+      # live-LLM test (test:live) needs a key and the on-device test (test:android) needs
+      # hardware, so neither runs here — see the comments on those tasks in mise.toml.
+      - name: Test
+        run: mise run test

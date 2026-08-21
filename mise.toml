@@ -1,7 +1,10 @@
-# ktlint lives here (not the workspace-root mise.toml) so only the Kotlin projects install it.
-# The JDK it needs on CI runners is in mise.ci.toml.
+# Tools every vitre task needs. The JDK the Gradle and ktlint tasks want on a CI runner is in
+# mise.ci.toml, which mise merges over this file only when MISE_ENV=ci.
 [tools]
 ktlint = "latest"
+# The `pre-commit` task shells out to prek, so it is declared here rather than assumed present:
+# `mise install` in a fresh clone should be enough to run the hooks.
+prek = "latest"
 
 [tasks.wrapper]
 description = "Generate the Gradle wrapper at the project root"
