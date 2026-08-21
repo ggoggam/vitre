@@ -77,7 +77,15 @@ description = "Publish the five library modules to Maven Central (CI only — ne
 # No version is passed. VERSION_NAME in gradle.properties is the released version — changing it on
 # main is what triggers the workflow that runs this task — so there is nothing to plumb through and
 # no second value that could disagree with the committed one.
-run = "./gradlew publishAndReleaseToMavenCentral"
+#
+# `--no-configuration-cache` overrides org.gradle.configuration-cache=true from gradle.properties,
+# and is not optional: the publish plugin refuses a release outright with "Publishing releases to
+# Maven Central is not supported yet with configuration caching enabled", and Gradle cannot store
+# the entry anyway — PublishToMavenRepository holds a repository spec it has no way to serialise
+# (gradle/gradle#22779). It costs nothing here. Publishing is a cold, once-per-release build on a
+# fresh runner, so there is no warm cache entry for it to reuse; every other task in this file keeps
+# the cache.
+run = "./gradlew publishAndReleaseToMavenCentral --no-configuration-cache"
 
 [tasks."publish:local"]
 description = "Publish the library modules to ~/.m2 to try them from another project"
