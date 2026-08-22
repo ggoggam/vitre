@@ -73,6 +73,30 @@ lane that logs in and a lane that then reads the account can be the same workflo
 platforms share one cookie jar across lanes deliberately: `WKWebsiteDataStore.defaultDataStore()` on
 iOS, the process-wide `CookieManager` on Android.
 
+That jar is reachable — `WebViewController.cookies`, a `CookieStore` with `read`, `write` and
+`clear` — because `document.cookie` cannot stand in for it: the session cookie is `HttpOnly` on
+every site worth automating, and page script is not allowed to see it. Sharing is the thing to keep
+in mind when using it. A `write` on one lane of a pool is a write for all four, and on Android for
+the host app's own WebViews too, since that jar belongs to the process rather than to this library.
+The exception is an iOS host that builds its own WebViews with `nonPersistentDataStore()`: the
+store reads whichever data store its WebView was given, so lanes deliberately kept apart stay
+apart. Which is also why there is no clear-everything call — `clear` takes a URL, and a caller that
+wants the whole jar gone can reach for the platform API having decided it is entitled to.
+
+Three asymmetries are worth knowing before relying on it, all documented on `CookieStore` itself.
+Android reads through `CookieManager.getCookie`, which returns the `Cookie` request header and
+therefore carries no attributes at all — names and values, and nulls for the rest. Its deletions are
+expiries rather than removals, aimed at path `/` and at each domain the URL could have been scoped
+to, because that header records neither: a cookie under a deeper path survives, and nothing in the
+API can report that it did. iOS answers with whole cookies and deletes them precisely, but has no
+public property key for `HttpOnly` and no value for `SameSite=None`, so a cookie written there is
+readable by page script and carries WebKit's own cross-site default.
+
+The desktop has no store yet, and `cookies` is null rather than half-wired. The reason is the seam
+below: CEF's own jar holds what Chromium loaded, a `java.net.CookieManager` holds what interception
+fetched, and a store answering from one of them would be right about half of a login flow and
+silently wrong about the other half.
+
 `forDevice` decides how many lanes a device can carry, and the platforms answer differently
 because the cost is different. On iOS a lane is a content process, which is exactly what makes it
 parallel and what gets an app jetsammed on a 3GB phone, so the count is scaled down by total RAM. On

@@ -66,6 +66,9 @@ class AndroidWebViewController(
             evaluateJs = ::evaluateJs,
         )
 
+    // Process-wide on this platform, so the same jar whichever controller it is reached through.
+    override val cookies: CookieStore = AndroidCookieStore
+
     init {
         require(WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
             "androidx.webkit WebMessageListener required (Android System WebView too old)"

@@ -51,6 +51,9 @@ class FakeWebViewController : WebViewController {
             evaluateJs = { script -> evaluateJs(script) },
         )
 
+    /** A real jar, unlike the platform ones, so a test can seed a session or assert on one. */
+    override val cookies: FakeCookieStore = FakeCookieStore()
+
     /** `html to baseUrl` for each [loadHtml] call, in order. */
     val loadedHtml = mutableListOf<Pair<String, String?>>()
 
