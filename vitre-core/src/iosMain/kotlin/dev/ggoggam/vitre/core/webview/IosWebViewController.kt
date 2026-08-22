@@ -103,6 +103,10 @@ class IosWebViewController(
             evaluateJs = ::evaluateJs,
         )
 
+    // This WebView's own data store, not the default one: a host that configured an ephemeral
+    // store did so to keep its session somewhere else, and reading the default would ignore that.
+    override val cookies: CookieStore = IosCookieStore(webView.configuration.websiteDataStore.httpCookieStore)
+
     init {
         val controller: WKUserContentController =
             webView.configuration.userContentController

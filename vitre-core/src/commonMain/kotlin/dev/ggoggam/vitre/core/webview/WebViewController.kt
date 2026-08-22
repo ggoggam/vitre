@@ -18,6 +18,21 @@ interface WebViewController {
     val bridge: WebViewBridge
 
     /**
+     * The cookie jar this WebView's session lives in, or null where there is not one to hand out.
+     *
+     * Null is a statement about this library, not about the page: it means no [CookieStore] is
+     * wired up for the platform yet, not that the WebView has no cookies. It is null on the desktop
+     * today, because CEF keeps the browser's cookies in `CefCookieManager` while intercepted
+     * requests carry cookies from a `java.net.CookieManager` this library owns — two jars, and a
+     * store that answered from one of them would be right about half of a login flow and silently
+     * wrong about the other half. See `docs/PARALLEL-LANES.md`. Reconciling them is the work that
+     * fills this in; until it is done, no answer is better than half an answer.
+     *
+     * Test doubles inherit the null default, so a fake only implements a jar if its tests need one.
+     */
+    val cookies: CookieStore? get() = null
+
+    /**
      * Loads [url] and suspends until the page has finished loading.
      *
      * Awaiting is not a convenience: committing a new document tears down the old JavaScript

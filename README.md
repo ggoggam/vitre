@@ -50,6 +50,10 @@ codebase for every platform, and a snapshot format an agent can read.
 - **A real bridge** — `postMessage` in both directions, with an inbox so a message that arrives
   before you wait for it is not lost, and typed payloads on both ends —
   `bridge.request<Ack, Token>(…)` for a round trip, `decodePayload<Token>(…)` for a workflow's.
+- **The session, not just the page** — `controller.cookies` reads, writes and clears the WebView's
+  cookie jar, including the `HttpOnly` cookie the site keeps its session in and `document.cookie`
+  cannot see, with host/path/`Secure`/`SameSite` scoping applied the way a request would apply it.
+  Android and iOS today; the desktop reports `null` until CEF's two jars are reconciled.
 - **Up to four sites at once** — one WebView per lane, one workflow engine each, queued so six
   workflows on a two-lane device run three deep instead of losing four.
 - **Agent-ready, twice** — `vitre-mcp` exposes the whole vocabulary as MCP tools over an in-process
