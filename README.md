@@ -76,7 +76,7 @@ The sample gallery on Android. The same screens run on iOS and the desktop from 
 | <img src="docs/images/gallery.png" alt="The Vitre gallery index" width="420"> | <img src="docs/images/workflow-run.png" alt="A completed workflow and its step trace" width="420"> |
 | **The index.** The agent chat, the parallel-lane scenarios, then one card per single-page workflow. | **A workflow, run.** The page on top, every step underneath with what it actually did. Steps 4 and 5 address elements by the handles `Snapshot` issued, not by selectors. |
 | <img src="docs/images/price-scout.png" alt="Price scout comparing four shops by delivered price" width="420"> | <img src="docs/images/agent-chat.png" alt="The agent chat showing an MCP tool result and the answer derived from it" width="420"> |
-| **Price scout.** Four cross-origin shops searched at once. This device offered two lanes, so four tasks ran two deep. The ranking is by delivered price, which puts the $69.99 sticker third. | **Agent chat.** A mocked model over a real MCP server: each action on the page is a `tools/call`, shown with the JSON that came back rather than hidden behind the answer. |
+| **Price scout.** An example workflow to retrieve info from third-party websites. | **Agent chat.** A mocked model over a real MCP server: each action on the page is a `tools/call`, shown with the JSON that came back rather than hidden behind the answer. |
 
 What each entry demonstrates is spelled out in
 [What's in the sample gallery](#whats-in-the-sample-gallery); to run it yourself, see

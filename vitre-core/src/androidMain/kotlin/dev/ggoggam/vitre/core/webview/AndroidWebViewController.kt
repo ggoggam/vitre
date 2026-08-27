@@ -176,6 +176,38 @@ class AndroidWebViewController(
             request: WebResourceRequest,
         ): WebResourceResponse? = interceptor?.intercept(request)
 
+        /**
+         * Refuses navigations to schemes this WebView cannot render a document from.
+         *
+         * A page that wants to hand off to a native app navigates the *main frame* to
+         * `intent://…;package=com.google.android.apps.maps;end` (or `market://`, or a vendor's own
+         * scheme). A browser turns that into an `Intent`; a bare WebView has no such rule, so it
+         * tries to fetch the URL, fails with `ERR_UNKNOWN_URL_SCHEME`, and — because that is a
+         * main-frame failure — [onReceivedError] below fails the navigation and takes the workflow
+         * with it. The page that was loading is replaced by an error page, so retrying lands
+         * nowhere either.
+         *
+         * Returning true leaves the current document in place, which is the outcome a workflow
+         * wants: the handoff was the page's idea, not the caller's, and the automation is here to
+         * drive the web page rather than to leave for an app. Google Maps is the case that found
+         * this — it reads the `wv` token in an Android WebView's user agent and redirects
+         * unconditionally, whether or not the app is installed — but nothing about the rule is
+         * specific to it.
+         *
+         * Deciding by what the WebView can *render*, rather than by blocklisting the schemes seen
+         * so far, is the part worth keeping: an app scheme this list has never heard of is refused
+         * for the same reason `intent` is. `about`, `data`, `blob` and `file` are here because the
+         * library itself navigates to them — `about:blank` is where a hosted WebView starts, and
+         * `loadHtml` gives a document a `data:` or custom base URL to run relative URLs against.
+         *
+         * Not called for the app's own `loadUrl`/`loadDataWithBaseURL` calls, so this sits on
+         * page-initiated navigation only and no step can be refused by it.
+         */
+        override fun shouldOverrideUrlLoading(
+            view: WebView,
+            request: WebResourceRequest,
+        ): Boolean = request.url.scheme?.lowercase() !in RENDERABLE_SCHEMES
+
         override fun onPageStarted(
             view: WebView,
             url: String?,
@@ -211,6 +243,12 @@ class AndroidWebViewController(
 
     private companion object {
         const val BRIDGE_NAME = "vitre"
+
+        /**
+         * The schemes a WebView can produce a document from, and so the ones
+         * [PageLoadWebViewClient.shouldOverrideUrlLoading] lets a page navigate itself to.
+         */
+        val RENDERABLE_SCHEMES = setOf("http", "https", "about", "data", "blob", "file")
 
         /**
          * What the platform hands us for a frame with an opaque origin — a sandboxed iframe, a
