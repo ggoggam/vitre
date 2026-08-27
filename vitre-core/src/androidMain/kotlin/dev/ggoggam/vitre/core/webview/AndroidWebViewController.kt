@@ -2,6 +2,7 @@ package dev.ggoggam.vitre.core.webview
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.net.Uri
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -17,7 +18,11 @@ import dev.ggoggam.vitre.core.bridge.BridgeReady
 import dev.ggoggam.vitre.core.bridge.DefaultWebViewBridge
 import dev.ggoggam.vitre.core.bridge.WebViewBridge
 import dev.ggoggam.vitre.core.bridge.WebViewInbox
+import dev.ggoggam.vitre.core.concurrent.WebViewDispatcher
 import dev.ggoggam.vitre.core.net.AndroidNetworkInterceptor
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import kotlin.coroutines.resume
 
 /**
@@ -135,6 +140,82 @@ class AndroidWebViewController(
                 webView.evaluateJavascript(wrapped) { result -> cont.resume(result ?: "null") }
             }
         }
+    }
+
+    /**
+     * Draws the WebView into a bitmap, then compresses it — the two halves deliberately in
+     * different places.
+     *
+     * `View.draw(Canvas)` is the whole of Android's answer here: it renders exactly what the view
+     * would paint on screen, at its current scroll position, which is the viewport this method
+     * promises. There is no full-page variant worth having on this platform; see
+     * [WebViewController.screenshot].
+     *
+     * **The draw is scaled on the canvas rather than by resampling afterwards.** A 1080×2400
+     * viewport is roughly 10MB at `ARGB_8888`, and capturing at full size only to shrink it means
+     * paying that plus the target — on the device where memory is scarcest. `Canvas.scale` makes
+     * the platform rasterise straight into the bitmap the caller asked for.
+     *
+     * **The compress runs off the WebView thread and outside the ordering lock.** PNG-encoding a
+     * megapixel is tens of milliseconds of pure CPU; doing it on the main thread is dropped frames,
+     * and doing it under the lock makes every other caller wait on work that no longer touches the
+     * WebView.
+     *
+     * Two honest caveats. Content composited by the GPU rather than drawn — a `<video>` surface, and
+     * some WebGL — is not part of what `draw` produces and comes out as the layer's background.
+     * And a WebView that has never been laid out has no size to draw, which is reported rather than
+     * silently returned as a 1×1 image.
+     */
+    override suspend fun screenshot(options: ScreenshotOptions): PageScreenshot {
+        checkOpen()
+        val capture =
+            serializer.exclusively {
+                withContext(WebViewDispatcher) { drawScaled(options) }
+            }
+        return withContext(Dispatchers.Default) { capture.encode(options) }
+    }
+
+    /** Runs on the WebView thread, under the ordering lock. Allocates the target-sized bitmap only. */
+    private fun drawScaled(options: ScreenshotOptions): Capture {
+        val sourceWidth = webView.width
+        val sourceHeight = webView.height
+        if (sourceWidth <= 0 || sourceHeight <= 0) {
+            throw ScreenshotFailedException(
+                "The WebView is ${sourceWidth}x$sourceHeight — it has not been laid out, so there is nothing to draw",
+            )
+        }
+        val size = options.fit(sourceWidth, sourceHeight)
+        val bitmap = Bitmap.createBitmap(size.width, size.height, Bitmap.Config.ARGB_8888)
+        Canvas(bitmap).apply {
+            scale(size.width.toFloat() / sourceWidth, size.height.toFloat() / sourceHeight)
+            webView.draw(this)
+        }
+        return Capture(bitmap, size)
+    }
+
+    private class Capture(
+        private val bitmap: Bitmap,
+        private val size: ScreenshotSize,
+    ) {
+        fun encode(options: ScreenshotOptions): PageScreenshot {
+            val stream = ByteArrayOutputStream()
+            val compressed =
+                try {
+                    bitmap.compress(options.format.toCompressFormat(), options.quality, stream)
+                } finally {
+                    // Recycled either way: the bytes are out, and waiting for the collector to
+                    // notice a 10MB native allocation is how a lane pool runs a device out of heap.
+                    bitmap.recycle()
+                }
+            if (!compressed) throw ScreenshotFailedException("Android refused to encode the bitmap as ${options.format}")
+            return PageScreenshot(stream.toByteArray(), options.format, size.width, size.height)
+        }
+
+        private fun ScreenshotFormat.toCompressFormat(): Bitmap.CompressFormat =
+            when (this) {
+                ScreenshotFormat.Png -> Bitmap.CompressFormat.PNG
+                ScreenshotFormat.Jpeg -> Bitmap.CompressFormat.JPEG
+            }
     }
 
     override suspend fun <T> exclusively(block: suspend (ExclusiveAccess) -> T): T {

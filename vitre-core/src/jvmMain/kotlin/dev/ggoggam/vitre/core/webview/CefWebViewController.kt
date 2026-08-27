@@ -5,17 +5,36 @@ import dev.datlag.kcef.KCEFClient
 import dev.ggoggam.vitre.core.bridge.DefaultWebViewBridge
 import dev.ggoggam.vitre.core.bridge.WebViewBridge
 import dev.ggoggam.vitre.core.bridge.WebViewInbox
+import dev.ggoggam.vitre.core.concurrent.WebViewDispatcher
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.future.await
 import kotlinx.coroutines.swing.Swing
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.cef.browser.CefBrowser
+import org.cef.browser.CefDevToolsClient
 import org.cef.browser.CefFrame
 import org.cef.browser.CefRendering
 import org.cef.handler.CefLoadHandler
 import org.cef.handler.CefLoadHandlerAdapter
 import org.cef.network.CefRequest
+import java.awt.Color
+import java.awt.RenderingHints
+import java.awt.image.BufferedImage
+import java.awt.image.BufferedImage.TYPE_INT_ARGB
+import java.awt.image.BufferedImage.TYPE_INT_RGB
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.util.Base64
+import javax.imageio.IIOImage
+import javax.imageio.ImageIO
+import javax.imageio.ImageWriteParam
 
 /**
  * Wraps a Kotlin CEF Browser, which it creates itself — see [create], and the ordering rule that
@@ -77,6 +96,18 @@ class CefWebViewController private constructor(
      * the create-time load is done.
      */
     private val initiallyIdle = CompletableDeferred<Unit>()
+
+    /**
+     * The DevTools session [screenshot] captures through, opened on first use and kept.
+     *
+     * Kept because attaching is a protocol handshake with the browser process, and doing one per
+     * screenshot would make a per-frame capture — the obvious way to record a run — pay for a
+     * session it immediately throws away. Opened lazily rather than in `init` because a browser
+     * whose page is never captured should not carry a DevTools session at all: it is an inspector
+     * attached to the user's page, and the cheapest way to be sure it costs nothing is not to have
+     * one.
+     */
+    private var devTools: CefDevToolsClient? = null
 
     private var closed = false
 
@@ -148,6 +179,181 @@ class CefWebViewController private constructor(
         }
     }
 
+    /**
+     * Captures through the **Chrome DevTools protocol**, because the obvious API does not work for
+     * the kind of browser this controller creates.
+     *
+     * `CefBrowser.createScreenshot(nativeResolution)` looks like the answer and is the first thing
+     * anyone tries. On the browser here it throws outright: this lane renders offscreen *with a
+     * host render handler* (`CefRenderingWithHandler`, for the Compose z-order reasons in
+     * [CefSurface]), so the browser is a `CefBrowserOsrWithHandler`, and that class's
+     * `createScreenshot` is a one-line `throw UnsupportedOperationException` in the JCEF build this
+     * module pins. Only `CefBrowserOsr` — the AWT-component variant this repo deliberately does not
+     * use — implements it.
+     *
+     * The other candidate was [CefSurface.frames], which already holds the last painted BGRA frame
+     * and would cost nothing to read. It loses on **freshness**, which is the property a screenshot
+     * is for: CEF paints only when something changed and no faster than the windowless frame rate
+     * this controller caps, so the newest frame can predate the step that just ran — a picture
+     * taken after a click that shows the page before it. `Page.captureScreenshot` forces a render
+     * and answers with that one. It is asked for **PNG** regardless of what the caller wanted, so
+     * the only lossy step is the re-encode in [encode] rather than a JPEG decoded and recompressed.
+     *
+     * **Both routes are bounded by the size the host reported.** An offscreen browser's viewport
+     * *is* its render handler's view rect, so a lane that has never had [CefSurface.resize] called
+     * on it is 1×1, and a capture of it is one pixel — of a page that loaded perfectly well. That
+     * is not something CDP can rescue, and a headless lane wanting a usable picture has to size its
+     * surface first. It is the one place this platform's screenshot is weaker than the other two,
+     * where the view has a size because it is in a hierarchy.
+     *
+     * This is also the one platform that *could* capture the whole scroll height — CDP takes
+     * `captureBeyondViewport` — and deliberately does not; see [WebViewController.screenshot].
+     */
+    override suspend fun screenshot(options: ScreenshotOptions): PageScreenshot {
+        checkOpen()
+        // Only the capture is an operation on the browser. The re-encode is arithmetic over bytes
+        // already in hand, so it stays outside the lock rather than making every other caller wait
+        // on an ImageIO round trip.
+        val png = serializer.exclusively { captureViaDevTools() }
+        return withContext(Dispatchers.Default) { encode(png, options) }
+    }
+
+    private suspend fun captureViaDevTools(): ByteArray {
+        val client =
+            withContext(WebViewDispatcher) {
+                devTools ?: browser.devToolsClient?.also { devTools = it }
+            } ?: throw ScreenshotFailedException("CEF would not open a DevTools session on this browser")
+        val response =
+            try {
+                withTimeout(scriptTimeoutMs) {
+                    client.executeDevToolsMethod("Page.captureScreenshot", CAPTURE_PNG_PARAMS).await()
+                }
+            } catch (_: TimeoutCancellationException) {
+                // A cancellation escaping here would be indistinguishable, one frame up, from the
+                // caller having been cancelled — the same reasoning as ScriptTimeoutException.
+                throw ScreenshotFailedException("Page.captureScreenshot did not answer within ${scriptTimeoutMs}ms")
+            } ?: throw ScreenshotFailedException("Page.captureScreenshot returned no result")
+        val encoded =
+            runCatching {
+                Json
+                    .parseToJsonElement(response)
+                    .jsonObject["data"]
+                    ?.jsonPrimitive
+                    ?.content
+            }.getOrNull()
+                ?: throw ScreenshotFailedException("Page.captureScreenshot returned no image data: $response")
+        return runCatching { Base64.getDecoder().decode(encoded) }
+            .getOrElse { throw ScreenshotFailedException("Page.captureScreenshot returned data that is not base64") }
+    }
+
+    /**
+     * Fits and re-encodes the captured PNG, and does neither when neither is needed.
+     *
+     * The pass-through matters more than it looks: a viewport already inside the caller's bound,
+     * asked for as PNG, is the common case, and decoding a megapixel only to write the same pixels
+     * back out is pure waste.
+     */
+    private fun encode(
+        png: ByteArray,
+        options: ScreenshotOptions,
+    ): PageScreenshot {
+        val source =
+            ImageIO.read(ByteArrayInputStream(png))
+                ?: throw ScreenshotFailedException("Could not decode the PNG CEF returned")
+        val target = options.fit(source.width, source.height)
+        if (options.format == ScreenshotFormat.Png && target.width == source.width && target.height == source.height) {
+            return PageScreenshot(png, ScreenshotFormat.Png, source.width, source.height)
+        }
+        // JPEG has no alpha channel, and an ARGB image written as one comes out with the
+        // transparent pixels black. TYPE_INT_RGB over white is what a browser would have shown.
+        val opaque = options.format == ScreenshotFormat.Jpeg
+        val scaled = resample(source, target, opaque)
+        val out = ByteArrayOutputStream()
+        when (options.format) {
+            ScreenshotFormat.Png -> ImageIO.write(scaled, "png", out)
+            ScreenshotFormat.Jpeg -> writeJpeg(scaled, options.quality, out)
+        }
+        return PageScreenshot(out.toByteArray(), options.format, target.width, target.height)
+    }
+
+    /**
+     * Downscales by repeated halving, then one bilinear step onto the exact target.
+     *
+     * `Image.getScaledInstance` is the one-liner and is the wrong tool twice over. It hands back a
+     * *lazily produced* image, so `drawImage(…, null)` with no `ImageObserver` can return before
+     * any pixels exist and leave a blank or half-drawn frame — a bug that reproduces on a slow
+     * machine and not on the one it was written on. And a single interpolated step across a large
+     * ratio samples rather than averages, which on a page of 12px text is the difference between
+     * legible and speckled. Halving averages every source pixel into the result, which is what
+     * makes a screenshot still readable at a third of its size — and readable is the entire point.
+     */
+    private fun resample(
+        source: BufferedImage,
+        target: ScreenshotSize,
+        opaque: Boolean,
+    ): BufferedImage {
+        var current = source
+        var width = source.width
+        var height = source.height
+        while (width / 2 > target.width && height / 2 > target.height) {
+            width /= 2
+            height /= 2
+            current = draw(current, width, height, opaque = false)
+        }
+        return draw(current, target.width, target.height, opaque)
+    }
+
+    private fun draw(
+        source: BufferedImage,
+        width: Int,
+        height: Int,
+        opaque: Boolean,
+    ): BufferedImage {
+        val out = BufferedImage(width, height, if (opaque) TYPE_INT_RGB else TYPE_INT_ARGB)
+        out.createGraphics().apply {
+            if (opaque) {
+                color = Color.WHITE
+                fillRect(0, 0, width, height)
+            }
+            setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
+            setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
+            // A BufferedImage source is fully realised, so this blocks until the pixels are there
+            // and the null observer is safe — which is exactly what getScaledInstance is not.
+            drawImage(source, 0, 0, width, height, null)
+            dispose()
+        }
+        return out
+    }
+
+    /**
+     * `ImageIO.write` has no quality argument, so the writer has to be driven directly — this is
+     * the whole of what the other two platforms get from one parameter on `compress` /
+     * `UIImageJPEGRepresentation`.
+     */
+    private fun writeJpeg(
+        image: BufferedImage,
+        quality: Int,
+        out: ByteArrayOutputStream,
+    ) {
+        val writer =
+            ImageIO.getImageWritersByFormatName("jpeg").let {
+                if (it.hasNext()) it.next() else throw ScreenshotFailedException("This JVM has no JPEG encoder")
+            }
+        val params =
+            writer.defaultWriteParam.apply {
+                compressionMode = ImageWriteParam.MODE_EXPLICIT
+                compressionQuality = quality / 100f
+            }
+        ImageIO.createImageOutputStream(out).use { stream ->
+            writer.output = stream
+            try {
+                writer.write(null, IIOImage(image, null, null), params)
+            } finally {
+                writer.dispose()
+            }
+        }
+    }
+
     override suspend fun <T> exclusively(block: suspend (ExclusiveAccess) -> T): T {
         checkOpen()
         return serializer.exclusively(block)
@@ -159,6 +365,11 @@ class CefWebViewController private constructor(
         browser.client.removeLoadHandler()
         browser.client.removeMessageRouter(channel.router)
         channel.dispose()
+        // Detached because this controller is what caused it to be opened. Safe to do while leaving
+        // the browser alive: `getDevToolsClient` reopens on demand, so a host that keeps driving
+        // this browser some other way is not left without one.
+        devTools?.close()
+        devTools = null
         // The browser is deliberately left alive, even though [create] is what made it — see
         // WebViewController.close. Disposing it while its AWT component is still in a hierarchy is
         // the same mistake as calling WebView.destroy() before detach, and only the owner knows
@@ -221,6 +432,13 @@ class CefWebViewController private constructor(
         }
 
         private const val WINDOWLESS_FRAME_RATE = 30
+
+        /**
+         * Always PNG, whatever the caller asked for: CDP's JPEG is a second lossy step on top of
+         * the caller's own re-encode, and the pass-through in `encode` means the PNG is usually
+         * handed straight back anyway.
+         */
+        private const val CAPTURE_PNG_PARAMS = """{"format":"png"}"""
     }
 
     private inner class PageLoadHandler : CefLoadHandlerAdapter() {
