@@ -208,6 +208,149 @@ object SampleWorkflows {
             )
         }
 
+    /**
+     * Google Maps: a page that is an application rather than a document.
+     *
+     * Every other live workflow here reads a server-rendered page, where the answer is in the HTML
+     * before any script runs and the only question is which selector names it. Maps is the other
+     * kind. It arrives as a map, the results do not exist in the DOM at all until a control is
+     * pressed, and a modal sits over the whole thing on first load. Three of the four steps below
+     * are there to get the page into a state where there is anything to extract — which is what
+     * driving a real application usually costs.
+     *
+     * It is also the workflow that found the `intent://` gap. Maps reads the `wv` token in an
+     * Android WebView's user agent and redirects the main frame to
+     * `intent://…;package=com.google.android.apps.maps;end`, whether or not the app is installed. A
+     * WebView cannot render that, so before `PageLoadWebViewClient.shouldOverrideUrlLoading`
+     * existed the navigation died at step one with `ERR_UNKNOWN_URL_SCHEME` and took the page with
+     * it. Refusing the handoff leaves the web page in place, which is what the rest of this reads.
+     *
+     * `hl=en` in the URL is load-bearing, not cosmetic. The row locator matches an `aria-label`
+     * containing the word "stars", and Maps writes that label in the device's language: the phone
+     * this was developed against is served Korean, where the same label reads "별표" and every
+     * locator below matches nothing. The Amazon workflow draws this lesson the other way round, by
+     * keying on class names *because* it cannot pin the language; here the language can be pinned,
+     * so it is.
+     */
+    val GoogleMapsPlaces =
+        workflow(id = "google-maps-places", name = "Google Maps places nearby") {
+            navigate("https://www.google.com/maps/search/coffee+near+Seoul+Station/?hl=en")
+            // Maps reads the `wv` token an Android WebView puts in its user agent and offers to
+            // hand the query to the installed app. The offer is a modal: it covers the controls
+            // below it, so nothing else on this page can be clicked until it is gone.
+            //
+            // Matched on `jsaction` rather than on a class. Every class on this page is minified
+            // and reminted whenever Google deploys, but `jsaction` carries the handler's name —
+            // `dismiss_action` — and names what the button *does*, which is the nearest thing to a
+            // contract the page offers. It is also language-independent, unlike matching the
+            // button's "Stay on web" text.
+            val dismissAppPrompt = xpath("//button[contains(@jsaction,'dismiss_action')]")
+            waitFor(dismissAppPrompt, timeoutMs = 25_000)
+            click(dismissAppPrompt)
+            // Mobile Maps shows results as pins first and as a list second, and "second" is literal:
+            // before this click not one result row exists in the document. That is why the wait for
+            // rows is below rather than straight after the navigation — waiting there finds nothing
+            // and blames the search for a view that was never opened.
+            //
+            // The button's own class is minified and its `jsaction` is a generated pane id, so the
+            // one durable thing about it is the label it wraps. `.//*` rather than `.//span`
+            // because which element holds the text is exactly the sort of detail a redesign moves.
+            val viewList = xpath("//button[.//*[normalize-space(text())='View list']]")
+            waitFor(viewList, timeoutMs = 15_000)
+            click(viewList)
+            // A result row has no id, no `data-` attribute and no role — its container is a
+            // minified class and nothing else. The one node in the row under a stable contract is
+            // the rating, which is a `role="img"` with the score spelled out in its `aria-label`
+            // because a row of stars has to be readable aloud. So the row is found by anchoring on
+            // that and walking *up*, which is the thing CSS cannot do at all.
+            //
+            // Anchoring on the rating rather than on the name is deliberate. Going down from the
+            // name matches a sixth "row": the sponsored block wraps the entire results pane and
+            // carries a heading of its own ("Why this ad?"), so the nearest enclosing container
+            // holding both a heading and a rating is the whole pane. From the rating the same
+            // expression lands on the tight container instead, and the ad wrapper never matches.
+            //
+            // What it costs is honest and worth stating: a place Maps has no rating for is not a
+            // row here at all. Rows are defined by the anchor, and the anchor is the rating.
+            val row =
+                xpath(
+                    "//span[@role='img'][contains(@aria-label,'stars')]" +
+                        "/ancestor::div[.//div[contains(@class,'fontHeadlineSmall')]][1]",
+                )
+            waitFor(row, timeoutMs = 20_000)
+            // Maps renders the list a screen at a time. On a phone-sized viewport the pane holds
+            // one row when it first appears and each scroll to the bottom loads roughly one more,
+            // so extracting straight after the wait above returns a single place — which reads as
+            // Google refusing to answer when in fact nothing has asked for the rest yet.
+            //
+            // This is the one script here that has to *wait*, and it can: `evaluateJs` awaits a
+            // promise rather than returning it, so the loop lives in the page instead of being
+            // spread across a dozen alternating scroll and wait steps. It gives up early when a
+            // pass stops adding rows, which is what keeps it inside the 15s a script has to settle.
+            //
+            // It scrolls every scrollable container rather than the one holding the list, for the
+            // same reason the row locator walks up from the rating: that container's class is
+            // minified like all the others, while "has more content than it can show" is a property
+            // no redesign can rename.
+            //
+            // The count it returns is the honest one — how many rows the pane ended up holding, as
+            // against the ten `limit` would have taken.
+            evaluateJs(
+                script =
+                    """
+                    (async () => {
+                      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+                      const count = () => document.evaluate(
+                        "count(${row.expression})", document, null, 1, null).numberValue;
+                      let seen = count();
+                      let dry = 0;
+                      for (let pass = 0; pass < 8 && seen < 8; pass++) {
+                        document.querySelectorAll('*').forEach((el) => {
+                          if (el.scrollHeight > el.clientHeight + 40) el.scrollTop = el.scrollHeight;
+                        });
+                        await sleep(1100);
+                        const now = count();
+                        dry = now === seen ? dry + 1 : 0;
+                        seen = now;
+                        if (dry >= 2) break;
+                      }
+                      return seen;
+                    })()
+                    """.trimIndent(),
+                into = "placeCount",
+            )
+            // The rating's own block, which the rest of the row hangs off. `fontHeadlineSmall` and
+            // `fontBodyMedium` below are the exception to the minification: they come from Google's
+            // shared typography sheet, are shared across their products, and say what a thing *is*
+            // rather than how this build happened to name it.
+            val ratingBlock = ".//span[@role='img'][contains(@aria-label,'stars')]/ancestor::div[2]"
+            extractRows(rows = row, into = "places", limit = 10) {
+                column("name", xpath(".//div[contains(@class,'fontHeadlineSmall')]"))
+                // The label reads "4.3 stars 105 Reviews" — score and review count in one string,
+                // and the only place the review count appears in a machine-readable form at all.
+                // The visible text next to it is "4.3(105)".
+                column(
+                    "rating",
+                    xpath(".//span[@role='img'][contains(@aria-label,'stars')]"),
+                    from = Source.Attribute("aria-label"),
+                )
+                // Category, address and opening hours are three spans in two divs that follow the
+                // rating block, none of which carries a usable hook of its own. `following-sibling`
+                // reaches them by position from the one node that does — the second axis query in
+                // this workflow with no CSS equivalent.
+                column("category", xpath("$ratingBlock/following-sibling::div[1]/div[1]/span[1]"))
+                // `last()`, not `[2]`: some rows carry an extra empty span between the category and
+                // the address, and indexing from the front reads the separator for one row in five.
+                column("address", xpath("$ratingBlock/following-sibling::div[1]/div[1]/span[last()]"))
+                // Positional, and so occasionally wrong in a way worth leaving visible: a place
+                // Google has an editorial blurb for puts that line here instead, and this column
+                // reads "Iconic coffeehouse chain" for the Starbucks row. There is no attribute
+                // distinguishing the two, so the choice is a wrong value in one row of eight or no
+                // column at all — the same trade the fixture's missing-price row is there to model.
+                column("hours", xpath("$ratingBlock/following-sibling::div[1]/div[2]"))
+            }
+        }
+
     /** The smallest possible real-world read. Static, server-rendered, unlikely to move. */
     val ExampleDotComTitle =
         workflow(id = "example-title", name = "example.com title") {
@@ -254,6 +397,7 @@ object SampleWorkflows {
             FormEcho,
             FixtureSearchResults,
             AmazonSearchResults,
+            GoogleMapsPlaces,
             ExampleDotComTitle,
             HackerNewsTopStory,
         )
