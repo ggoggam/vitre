@@ -1,37 +1,42 @@
 package dev.ggoggam.vitre.sample.ui
 
-import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.BottomSheetDefaults
-import androidx.compose.material3.BottomSheetScaffold
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SheetValue
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.rememberBottomSheetScaffoldState
-import androidx.compose.material3.rememberStandardBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -49,7 +54,6 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.ggoggam.vitre.compose.VitreWebView
 import dev.ggoggam.vitre.compose.rememberVitreWebViewState
@@ -58,6 +62,16 @@ import dev.ggoggam.vitre.core.workflow.WorkflowEngine
 import dev.ggoggam.vitre.core.workflow.WorkflowEvent
 import dev.ggoggam.vitre.sample.data.SampleMcp
 import kotlinx.coroutines.launch
+import kotlin.math.abs
+
+/**
+ * The three heights the run sheet settles on.
+ *
+ * Three rather than the two a `BottomSheetScaffold` offers, which is the reason this screen drives
+ * its own sheet: peek and full alone would make you choose between seeing the page and seeing the
+ * timeline, and the middle stop — the one it opens on — is where most runs are read.
+ */
+private enum class SheetStop { Peek, Half, Full }
 
 /**
  * Runs [workflow] in a hosted WebView and reports progress underneath it.
@@ -107,105 +121,105 @@ fun WorkflowRunner(
 
     val state = runStateOf(workflow.steps.size, events)
     val scope = rememberCoroutineScope()
-    // Hiding is off: the header is the only handle back to the run detail, so it always stays put.
-    val scaffoldState =
-        rememberBottomSheetScaffoldState(
-            bottomSheetState =
-                rememberStandardBottomSheetState(initialValue = SheetValue.Expanded),
-        )
-    val sheetState = scaffoldState.bottomSheetState
-    // The scaffold gives the drag two stops, so the third — detail all the way up — is a chevron in
-    // the header rather than a gesture. Off by default: most runs are short enough that the drag's
-    // own stop shows the whole timeline, and the page stays worth looking at.
-    var fullHeightDetail by remember(workflow.id) { mutableStateOf(false) }
+    // Which stop the sheet is settled on. The drag reaches all three; the header's tap and its
+    // chevron are shortcuts to two of the transitions, for anyone who would rather not drag.
+    var stop by remember(workflow.id) { mutableStateOf(SheetStop.Half) }
     // Collapsed, the sheet should show its handle and header and nothing more — a sliver of the
-    // first step row reads as a rendering slip rather than an invitation to drag. All three are
+    // first step row reads as a rendering slip rather than an invitation to drag. Both are
     // measured rather than guessed so a larger font scale or a different handle still lands on that
     // seam; the initial values are only what the first frame uses before layout reports the real
     // ones. The navigation bar inset is deliberately not added to the peek: it hangs off the bottom
     // of the sheet, below the screen edge, so counting it would just uncover that much of the
-    // timeline. The detail cap does count it, because there it is on screen — see [RunSheet].
+    // timeline. The detail viewport does count it, because there it is on screen — see [RunSheet].
     val density = LocalDensity.current
     var handleHeight by remember { mutableStateOf(48.dp) }
     var headerHeight by remember { mutableStateOf(52.dp) }
-    var topBarHeight by remember { mutableStateOf(64.dp) }
+    // Where the first drawable row starts: under the status bar on a phone, under nothing on the
+    // desktop. Full height stops there rather than at zero — covering the top bar is the point of
+    // it, running the timeline under the clock is not.
+    val topInset = with(density) { WindowInsets.safeDrawing.getTop(density).toDp() }
 
-    BoxWithConstraints(modifier = modifier) {
-        // Dragged open, the sheet gets at most half of what it is running in, so the page it is
-        // reporting on never disappears behind it. On a phone in portrait that half is roomier than
-        // the timeline needs and the flat cap wins; in a landscape pane it is the half that binds.
-        // At full height it takes everything below the top bar — a long timeline or a long MCP
-        // transcript is worth the whole pane — but not the bar itself, so back and re-run stay
-        // reachable and the sheet still reads as a sheet over something.
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val chrome = handleHeight + headerHeight
-        val targetDetailHeight =
-            if (fullHeightDetail) {
-                (maxHeight - topBarHeight - chrome).coerceAtLeast(0.dp)
-            } else {
-                (maxHeight / 2 - chrome).coerceIn(0.dp, MAX_SHEET_DETAIL_HEIGHT)
-            }
-        // Animated rather than switched: the sheet's expanded stop is wherever its content ends, so
-        // growing the content over a few frames is what carries the sheet up smoothly instead of
-        // teleporting it.
-        val detailMaxHeight by animateDpAsState(targetDetailHeight, label = "sheetDetailHeight")
+        // The three stops, as sheet heights rather than offsets, because the detail's scroll
+        // viewport is the sheet minus its chrome and has to shrink with it. A sheet of fixed height
+        // slid up and down would keep a viewport the size of the tallest stop, and the timeline
+        // would scroll to rows sitting off the bottom of the screen.
+        //
+        // Half is what the sheet used to stop at and still opens on: at most half of what the
+        // runner is running in, so the page it reports on never disappears behind it, and no more
+        // than the flat cap, which on a phone in portrait is roomier than the timeline needs.
+        // Full takes the whole pane, top bar included — a long timeline or a long MCP transcript is
+        // worth the screen, and neither control the bar holds is lost with it: system back leaves
+        // the runner (see `App`), and the header's chevron, now at the top of the screen, is what
+        // puts the bar back.
+        val peekHeight = chrome
+        val fullHeight = (maxHeight - topInset).coerceAtLeast(peekHeight)
+        val halfHeight = (chrome + MAX_SHEET_DETAIL_HEIGHT).coerceAtMost(maxHeight / 2).coerceIn(peekHeight, fullHeight)
 
-        BottomSheetScaffold(
-            modifier = Modifier.fillMaxSize(),
-            scaffoldState = scaffoldState,
-            sheetPeekHeight = handleHeight + headerHeight,
-            sheetContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-            sheetShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
-            sheetShadowElevation = 12.dp,
-            // Wrapped rather than replaced: the scaffold hangs the sheet's expand/collapse
-            // accessibility actions off whatever occupies this slot.
-            sheetDragHandle = {
-                Box(
-                    modifier =
-                        Modifier.onSizeChanged {
-                            handleHeight = with(density) { it.height.toDp() }
+        val peekPx = with(density) { peekHeight.toPx() }
+        val halfPx = with(density) { halfHeight.toPx() }
+        val fullPx = with(density) { fullHeight.toPx() }
+
+        fun pxOf(target: SheetStop) =
+            when (target) {
+                SheetStop.Peek -> peekPx
+                SheetStop.Half -> halfPx
+                SheetStop.Full -> fullPx
+            }
+
+        // The sheet's live height. An `Animatable` rather than `animateDpAsState` because a drag
+        // has to be able to interrupt the animation and take the value over mid-flight, which is
+        // the whole difference between a gesture and a button.
+        val sheetHeightPx = remember(workflow.id) { Animatable(0f) }
+
+        suspend fun settleTo(target: SheetStop) {
+            stop = target
+            sheetHeightPx.animateTo(pxOf(target), spring(stiffness = Spring.StiffnessMediumLow))
+        }
+        // Re-seats the sheet when the geometry moves under it — the first frames, where the chrome
+        // is still the guessed height, and a rotation. Keyed on the stop positions, so a drag,
+        // which moves the sheet without moving them, is never interrupted by it.
+        LaunchedEffect(peekPx, halfPx, fullPx) { sheetHeightPx.snapTo(pxOf(stop)) }
+        // Full height covers the top bar, and with it the only visible way back. System back undoes
+        // that before it leaves the runner, so the gesture always undoes the last thing that
+        // happened rather than two things at once. Declared after `App`'s handler and so ahead of
+        // it in the dispatcher, which is what lets it take the first press.
+        PlatformBackHandler(enabled = stop == SheetStop.Full) {
+            scope.launch { settleTo(SheetStop.Half) }
+        }
+
+        val dragState =
+            rememberDraggableState { delta ->
+                // Up is a negative delta and a taller sheet. Clamped to the outer stops so a drag
+                // cannot overshoot into empty space and leave the sheet somewhere it has no stop.
+                scope.launch { sheetHeightPx.snapTo((sheetHeightPx.value - delta).coerceIn(peekPx, fullPx)) }
+            }
+        val sheetDrag =
+            Modifier.draggable(
+                state = dragState,
+                orientation = Orientation.Vertical,
+                onDragStopped = { velocity ->
+                    val height = sheetHeightPx.value
+                    val ascending = listOf(SheetStop.Peek, SheetStop.Half, SheetStop.Full)
+                    // A definite flick carries to the next stop the way it was thrown, even from
+                    // right beside the one it started at — which is what makes two quick flicks up
+                    // reach full height. Anything slower is a considered drag, and settles on
+                    // whichever stop it was left nearest.
+                    settleTo(
+                        when {
+                            velocity < -FLING_VELOCITY -> ascending.firstOrNull { pxOf(it) > height + 1f } ?: SheetStop.Full
+                            velocity > FLING_VELOCITY -> ascending.lastOrNull { pxOf(it) < height - 1f } ?: SheetStop.Peek
+                            else -> ascending.minBy { abs(pxOf(it) - height) }
                         },
-                ) {
-                    BottomSheetDefaults.DragHandle()
-                }
-            },
-            sheetContent = {
-                RunSheet(
-                    workflow = workflow,
-                    state = state,
-                    expanded = sheetState.targetValue == SheetValue.Expanded,
-                    fullHeight = fullHeightDetail,
-                    detailMaxHeight = detailMaxHeight,
-                    mcpTranscript = mcpTranscript,
-                    onAskAgent = {
-                        scope.launch {
-                            mcpTranscript = "…"
-                            mcpTranscript = SampleMcp.snapshotThroughMcp()
-                        }
-                    },
-                    onHeaderSized = { headerHeight = with(density) { it.toDp() } },
-                    onToggle = {
-                        scope.launch {
-                            if (sheetState.targetValue == SheetValue.Expanded) {
-                                sheetState.partialExpand()
-                            } else {
-                                sheetState.expand()
-                            }
-                        }
-                    },
-                    // Asking for full height while the sheet is down is asking to see the detail,
-                    // so it opens too — otherwise the chevron would look like it did nothing.
-                    onToggleFullHeight = {
-                        fullHeightDetail = !fullHeightDetail
-                        scope.launch { sheetState.expand() }
-                    },
-                )
-            },
+                    )
+                },
+            )
+
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
             topBar = {
                 TopAppBar(
-                    modifier =
-                        Modifier.onSizeChanged {
-                            topBarHeight = with(density) { it.height.toDp() }
-                        },
                     title = {
                         Column {
                             Text(
@@ -257,6 +271,58 @@ fun WorkflowRunner(
                 )
             }
         }
+
+        // A sibling of the scaffold rather than its sheet slot, which is what lets the full stop
+        // cover the top bar. What it gives up with the slot is the scaffold's own expand/collapse
+        // accessibility actions on the handle; the header is a labelled click target and the
+        // chevron a labelled button, so both transitions are still reachable without the gesture.
+        Surface(
+            modifier =
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(with(density) { sheetHeightPx.value.toDp() }),
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+            shadowElevation = 12.dp,
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Box(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .then(sheetDrag)
+                            .onSizeChanged { handleHeight = with(density) { it.height.toDp() } },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    BottomSheetDefaults.DragHandle()
+                }
+                RunSheet(
+                    workflow = workflow,
+                    state = state,
+                    expanded = stop != SheetStop.Peek,
+                    fullHeight = stop == SheetStop.Full,
+                    mcpTranscript = mcpTranscript,
+                    onAskAgent = {
+                        scope.launch {
+                            mcpTranscript = "…"
+                            mcpTranscript = SampleMcp.snapshotThroughMcp()
+                        }
+                    },
+                    onHeaderSized = { headerHeight = with(density) { it.toDp() } },
+                    onToggle = {
+                        scope.launch { settleTo(if (stop == SheetStop.Peek) SheetStop.Half else SheetStop.Peek) }
+                    },
+                    // Asking for full height while the sheet is down is asking to see the detail,
+                    // so it opens too — otherwise the chevron would look like it did nothing.
+                    onToggleFullHeight = {
+                        scope.launch { settleTo(if (stop == SheetStop.Full) SheetStop.Half else SheetStop.Full) }
+                    },
+                    headerModifier = sheetDrag,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
     }
 }
 
@@ -267,12 +333,12 @@ private fun RunSheet(
     state: RunState,
     expanded: Boolean,
     fullHeight: Boolean,
-    detailMaxHeight: Dp,
     mcpTranscript: String?,
     onAskAgent: () -> Unit,
     onHeaderSized: (Int) -> Unit,
     onToggle: () -> Unit,
     onToggleFullHeight: () -> Unit,
+    headerModifier: Modifier,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
@@ -283,17 +349,17 @@ private fun RunSheet(
             fullHeight = fullHeight,
             onToggle = onToggle,
             onToggleFullHeight = onToggleFullHeight,
-            modifier = Modifier.onSizeChanged { onHeaderSized(it.height) },
+            modifier = Modifier.onSizeChanged { onHeaderSized(it.height) }.then(headerModifier),
         )
-        // Capped so a long workflow cannot push the sheet over the whole page unasked: past the cap
-        // the timeline scrolls inside the sheet instead of growing it. The header's chevron is what
-        // raises the cap. The navigation bar inset is taken out of the viewport rather than added
-        // to the content, so the cap is the whole of what this costs the sheet — at full height
-        // that is what leaves the sheet's top edge exactly under the top bar.
+        // Whatever the sheet has left after its chrome, which is what makes the drag's stops mean
+        // something: at each one the timeline scrolls within exactly the space on screen, rather
+        // than within the tallest stop's worth with the overflow below the screen edge. The
+        // navigation bar inset comes out of the viewport rather than being added to the content, so
+        // the last row clears the gesture bar without the sheet growing to accommodate it.
         Column(
             modifier =
                 Modifier
-                    .heightIn(max = detailMaxHeight)
+                    .weight(1f)
                     .navigationBarsPadding()
                     .verticalScroll(rememberScrollState())
                     .padding(bottom = 16.dp),
@@ -439,3 +505,10 @@ private fun SectionLabel(text: String) {
 }
 
 private val MAX_SHEET_DETAIL_HEIGHT = 300.dp
+
+/**
+ * Above this, in pixels per second, a drag counts as a flick and carries to the next stop rather
+ * than settling on the nearest one. Low enough that an ordinary flick up from the half stop reaches
+ * full height, high enough that easing the sheet into place is not read as one.
+ */
+private const val FLING_VELOCITY = 400f

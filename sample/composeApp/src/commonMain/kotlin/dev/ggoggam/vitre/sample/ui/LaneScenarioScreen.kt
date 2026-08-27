@@ -1,5 +1,6 @@
 package dev.ggoggam.vitre.sample.ui
 
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -45,6 +46,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -81,6 +83,12 @@ fun LaneScenarioScreen(
     var query by remember(scenario.id) { mutableStateOf(scenario.defaultQuery) }
     var running by remember(scenario.id) { mutableStateOf(false) }
     var tab by remember(scenario.id) { mutableStateOf(LaneTab.Results) }
+    // The detail's second stop. Off by default: the lanes rendering is the demonstration, and the
+    // tab underneath them is a reading of it rather than the thing itself.
+    var fullHeightDetail by remember(scenario.id) { mutableStateOf(false) }
+    // Same reasoning as the run sheet's: expanded, the chevron is the only control still on screen,
+    // so back has to mean "put the detail down" before it means "leave the scenario".
+    PlatformBackHandler(enabled = fullHeightDetail) { fullHeightDetail = false }
 
     /** Wall-clock for the whole submission, so a slow run can be told from a stuck one. */
     var elapsedMs by remember(scenario.id) { mutableStateOf<Long?>(null) }
@@ -141,6 +149,9 @@ fun LaneScenarioScreen(
         }
     }
 
+    val tabs = if (scenario.comparesPrices) LaneTab.entries else listOf(LaneTab.Lanes, LaneTab.Network)
+    val shownTab = if (tab in tabs) tab else tabs.first()
+
     Scaffold(
         modifier = modifier,
         topBar = {
@@ -178,45 +189,133 @@ fun LaneScenarioScreen(
             )
         },
     ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
-            ControlBar(
-                scenario = scenario,
-                query = query,
-                onQueryChange = { query = it },
-                running = running,
-                enabled = pool != null,
-                status = status,
-                onRun = ::start,
-            )
-            LaneViewport(
-                scenario = scenario,
-                unavailable = unavailable,
-                onPoolReady = { pool = it },
-                onUnavailable = { unavailable = it },
-                modifier = Modifier.fillMaxWidth().weight(VIEWPORT_WEIGHT),
-            )
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            val tabs = if (scenario.comparesPrices) LaneTab.entries else listOf(LaneTab.Lanes, LaneTab.Network)
-            TabRow(
-                selectedTabIndex = tabs.indexOf(tab).coerceAtLeast(0),
-                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-            ) {
-                tabs.forEach { entry ->
-                    Tab(
-                        selected = entry == tab,
-                        onClick = { tab = entry },
-                        text = { Text(entry.title(runs.size, exchanges.size), maxLines = 1) },
-                    )
+        // The expanded detail is drawn over the scaffold's content rather than given a share of the
+        // column, which is what keeps it from resizing anything underneath. Four lane WebViews
+        // relaid out because a table wanted more room would be a different demo — and a worse one,
+        // since a page that reflowed mid-run is exactly the confound the lanes are on screen to
+        // rule out.
+        //
+        // Inside the content slot rather than over the whole screen, so the top bar stays put: the
+        // scenario's name, its elapsed time and "Run again" are what tell you which run the table
+        // below is a reading of, and they are worth more here than the forty dp they cost.
+        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                ControlBar(
+                    scenario = scenario,
+                    query = query,
+                    onQueryChange = { query = it },
+                    running = running,
+                    enabled = pool != null,
+                    status = status,
+                    onRun = ::start,
+                )
+                LaneViewport(
+                    scenario = scenario,
+                    unavailable = unavailable,
+                    onPoolReady = { pool = it },
+                    onUnavailable = { unavailable = it },
+                    modifier = Modifier.fillMaxWidth().weight(VIEWPORT_WEIGHT),
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                LaneTabBar(
+                    tabs = tabs,
+                    selected = shownTab,
+                    runCount = runs.size,
+                    exchangeCount = exchanges.size,
+                    fullHeight = false,
+                    onSelect = { tab = it },
+                    onToggleFullHeight = { fullHeightDetail = true },
+                )
+                Box(modifier = Modifier.fillMaxWidth().weight(DETAIL_WEIGHT)) {
+                    LaneTabContent(tab = shownTab, ordered = ordered, exchanges = exchanges)
                 }
             }
-            Box(modifier = Modifier.fillMaxWidth().weight(DETAIL_WEIGHT)) {
-                when (if (tab in tabs) tab else tabs.first()) {
-                    LaneTab.Results -> ResultsTab(ordered)
-                    LaneTab.Lanes -> LanesTab(ordered)
-                    LaneTab.Network -> NetworkTab(exchanges)
+
+            // Only composed while it is up, so the collapsed screen is laid out exactly as it was
+            // before there was a second stop at all. The tab content appears twice in the source
+            // and never twice on screen.
+            if (fullHeightDetail) {
+                Column(
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.surfaceContainerLowest),
+                ) {
+                    LaneTabBar(
+                        tabs = tabs,
+                        selected = shownTab,
+                        runCount = runs.size,
+                        exchangeCount = exchanges.size,
+                        fullHeight = true,
+                        onSelect = { tab = it },
+                        onToggleFullHeight = { fullHeightDetail = false },
+                    )
+                    Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                        LaneTabContent(tab = shownTab, ordered = ordered, exchanges = exchanges)
+                    }
                 }
             }
         }
+    }
+}
+
+/**
+ * The tab strip, with the chevron that takes the detail over the rest of the screen and back.
+ *
+ * Shared by both stops rather than written twice, so the tabs cannot drift apart — and so the
+ * chevron keeps its place when the detail comes up over the row that was holding it.
+ */
+@Composable
+private fun LaneTabBar(
+    tabs: List<LaneTab>,
+    selected: LaneTab,
+    runCount: Int,
+    exchangeCount: Int,
+    fullHeight: Boolean,
+    onSelect: (LaneTab) -> Unit,
+    onToggleFullHeight: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TabRow(
+            selectedTabIndex = tabs.indexOf(selected).coerceAtLeast(0),
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            modifier = Modifier.weight(1f),
+        ) {
+            tabs.forEach { entry ->
+                Tab(
+                    selected = entry == selected,
+                    onClick = { onSelect(entry) },
+                    text = { Text(entry.title(runCount, exchangeCount), maxLines = 1) },
+                )
+            }
+        }
+        // The same glyph and the same turn as the run sheet's, because it means the same thing.
+        val chevronRotation by animateFloatAsState(if (fullHeight) 180f else 0f, label = "laneChevron")
+        IconButton(onClick = onToggleFullHeight) {
+            Icon(
+                imageVector = ExpandLessIcon,
+                contentDescription =
+                    if (fullHeight) "Shrink lane detail" else "Expand lane detail to full height",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.rotate(chevronRotation),
+            )
+        }
+    }
+}
+
+@Composable
+private fun LaneTabContent(
+    tab: LaneTab,
+    ordered: List<LaneRun>,
+    exchanges: List<NetworkExchange>,
+) {
+    when (tab) {
+        LaneTab.Results -> ResultsTab(ordered)
+        LaneTab.Lanes -> LanesTab(ordered)
+        LaneTab.Network -> NetworkTab(exchanges)
     }
 }
 
