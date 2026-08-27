@@ -100,11 +100,13 @@ class WorkflowEngineConcurrencyTest {
             val typed = mutableMapOf<String, String>()
             controller.nextEvalResult = { script ->
                 when {
-                    // Stands in for `el.value = "Kotlin"`, which sets a property and leaves the
-                    // markup's value attribute untouched.
-                    "el.value=" in script -> {
+                    // The fill step, recognised by the events only it dispatches. It writes the
+                    // live `value` *property* — through the prototype's setter now, but still a
+                    // property — and leaves the markup's value attribute untouched. It answers
+                    // with a status, which is what lets a fill that went nowhere be reported.
+                    "dispatchEvent" in script -> {
                         typed["value"] = "Kotlin"
-                        "null"
+                        "\"ok\""
                     }
 
                     "getAttribute" in script -> {

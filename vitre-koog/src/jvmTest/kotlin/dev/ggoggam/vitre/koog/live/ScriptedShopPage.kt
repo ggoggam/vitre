@@ -123,7 +123,11 @@ class ScriptedShopPage : WebViewController {
     private val handleRef = Regex("""byRef\.get\("([^"]+)"\)""")
     private val cssSelector = Regex("""querySelector\("((?:[^"\\]|\\.)*)"\)""")
     private val rowsSelector = Regex("""querySelectorAll\("((?:[^"\\]|\\.)*)"\)""")
-    private val typedValue = Regex("""el\.value="((?:[^"\\]|\\.)*)"""")
+
+    // `var T="…"`, not `el.value="…"`: the fill step stopped assigning `value` directly. It writes
+    // through the setter on the element's prototype now — the only write a framework's value
+    // tracker can see — so the text is bound to a local and handed to that.
+    private val typedValue = Regex("""var T="((?:[^"\\]|\\.)*)"""")
     private val propertyName = Regex("""\?\.\["([^"]+)"\]""")
     private val column = Regex(""""([^"]+)":\(\(r\.querySelector\("([^"]+)"\)\)""")
 
@@ -171,7 +175,10 @@ class ScriptedShopPage : WebViewController {
                         ?.get(1)
                         .orEmpty()
                 if (node?.id == "q") query = unescape(text)
-                "null"
+                // A status, not `null`. The fill step reports what it managed to do, so that a
+                // field it could not actually write fails the step instead of passing quietly —
+                // which means this page has to answer it like a page that did the work.
+                JsonPrimitive("ok").toString()
             }
 
             script.trimEnd().endsWith("?.click()") -> {

@@ -88,12 +88,14 @@ class WorkflowEngine(
             }
 
             is WorkflowStep.Input -> {
-                controller.evaluateJs(
-                    "(function(){var el=${LocatorJs.first(step.locator)};" +
-                        "if(el){el.value=${jsString(step.text)};" +
-                        "el.dispatchEvent(new Event('input',{bubbles:true}));" +
-                        "el.dispatchEvent(new Event('change',{bubbles:true}));}})()",
-                )
+                // The only step whose script reports back on itself, and the reason is the whole
+                // point of the family: typing, ticking and choosing each have a way to fail that
+                // leaves the DOM looking exactly as it would have looked on success. A step that
+                // does not ask cannot tell the two apart, which is how this used to confirm a form
+                // the page had never received. One round trip either way — the status comes back
+                // from the same call that did the work.
+                val status = controller.evaluateJs(InputJs.script(step)).decodeJsResult()
+                InputJs.explain(step, status)?.let { error(it) }
             }
 
             is WorkflowStep.Extract -> {
