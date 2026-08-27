@@ -84,6 +84,7 @@ internal class WebViewTools(
             "evaluate" -> evaluate(args)
             "send_message" -> sendMessage(args)
             "await_message" -> awaitMessage(args)
+            "read_network" -> readNetwork(args)
             "acquire_lease" -> acquireLease(args)
             "release_lease" -> releaseLease(args)
             else -> throw ToolFailure("Unknown tool `$name`.")
@@ -187,6 +188,30 @@ internal class WebViewTools(
 
     private suspend fun awaitMessage(args: JsonObject): ToolResult =
         ToolResult(driver.awaitMessage(args.requiredString("type"), args.timeoutMs(), args.target()))
+
+    /**
+     * The one page tool with no `lease` argument, because it reads a buffer rather than the page —
+     * see [PageDriver.readNetwork]. Taking `session` from [target] anyway would advertise a `lease`
+     * this tool has no use for.
+     */
+    private fun readNetwork(args: JsonObject): ToolResult {
+        val read =
+            driver.readNetwork(
+                urlContains = args.string("url_contains"),
+                limit = args.intOr("limit", PageDriver.DEFAULT_NETWORK_LIMIT),
+                maxBodyChars = args.intOr("max_body_chars", PageDriver.DEFAULT_NETWORK_BODY_CHARS),
+                session = args.string("session"),
+            )
+        return ToolResult(
+            PageToolReplies.network(read),
+            structured =
+                buildJsonObject {
+                    put("returned", read.exchanges.size)
+                    put("matched", read.matched)
+                    put("retained", read.retained)
+                },
+        )
+    }
 
     private suspend fun acquireLease(args: JsonObject): ToolResult {
         val grant = driver.acquireLease(args.string("session"), args.long("ttl_ms") ?: DEFAULT_LEASE_TTL_MS)
@@ -387,6 +412,20 @@ internal class WebViewTools(
                             stringProp("session", PageToolDocs.SESSION)
                             stringProp("lease", PageToolDocs.LEASE)
                             intProp("timeout_ms", PageToolDocs.WAIT_TIMEOUT)
+                        },
+                ),
+                ToolDefinition(
+                    name = "read_network",
+                    title = "Read captured network traffic",
+                    description = PageToolDocs.READ_NETWORK,
+                    inputSchema =
+                        toolSchema {
+                            stringProp("url_contains", PageToolDocs.URL_CONTAINS)
+                            intProp("limit", PageToolDocs.NETWORK_LIMIT)
+                            intProp("max_body_chars", PageToolDocs.MAX_BODY_CHARS)
+                            stringProp("session", PageToolDocs.SESSION)
+                            // No `lease`: this reads a buffer and never the page, so there is no
+                            // sequence for a claim to protect. See PageDriver.readNetwork.
                         },
                 ),
                 ToolDefinition(

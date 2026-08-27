@@ -62,4 +62,94 @@ object PageToolReplies {
     fun leaseReleased(id: String): String = "Released `$id`."
 
     fun leaseNotActive(id: String): String = "Lease `$id` was not active — it had already expired or been released."
+
+    /**
+     * Captured traffic, as the model reads it.
+     *
+     * Two things this has to get right, and both are about what the reader concludes rather than
+     * about what is in the list:
+     *
+     *  - **An empty result is not "it did not happen."** The tap's coverage differs by platform, so
+     *    the empty case repeats the caveat instead of leaving a bare "0 matches" to be read as
+     *    proof of absence. The tool description says it too; this says it at the moment the wrong
+     *    conclusion is available.
+     *  - **A cut body is labelled where the body is**, not in a footnote. A model that scrolls past
+     *    a header and reads truncated JSON as complete will report four results out of forty, and
+     *    nothing downstream can tell that it did.
+     */
+    fun network(read: NetworkRead): String {
+        val scope = read.filter?.let { " matching `$it`" }.orEmpty()
+        if (read.exchanges.isEmpty()) {
+            return buildString {
+                append("No captured exchange$scope. ")
+                append(
+                    if (read.retained == 0) {
+                        "Nothing has been captured for this session at all — either the page has " +
+                            "made no requests the tap can see, or it made them before capture started. "
+                    } else {
+                        "${read.retained} exchange${plural(read.retained)} are held, none of them a match. "
+                    },
+                )
+                append(NOT_PROOF_OF_ABSENCE)
+            }
+        }
+        return buildString {
+            append("Showing ${read.exchanges.size} of ${read.matched} captured exchange")
+            append(plural(read.matched))
+            append(scope)
+            append(", newest first")
+            // Said only when it is true, and it is exactly the case where an older exchange the
+            // caller is looking for may have existed and been dropped.
+            if (read.retained >= read.capacity) {
+                append(" (the buffer is full at ${read.capacity}, so anything older has been dropped)")
+            }
+            append(".\n")
+            read.exchanges.forEach { exchange ->
+                append('\n')
+                append(exchange.render())
+                append('\n')
+            }
+        }
+    }
+
+    private fun NetworkExchangeSummary.render(): String =
+        buildString {
+            append("${method.uppercase()} ")
+            append(if (status > 0) "$status " else "(no response) ")
+            append(url)
+            val notes = listOfNotNull(contentType, "${durationMs}ms".takeIf { durationMs > 0 }, error)
+            if (notes.isNotEmpty()) append(" — ${notes.joinToString(", ")}")
+            append('\n')
+            append(
+                when {
+                    body != null && bodyTruncated -> {
+                        "body (TRUNCATED — this is the first ${body.length} characters, not the whole " +
+                            "response; do not treat it as complete):\n$body"
+                    }
+
+                    body != null -> {
+                        "body:\n$body"
+                    }
+
+                    // Withheld rather than absent: there was a body and the caller asked not to be
+                    // shown it. Saying "no body" here would be a lie the caller cannot detect.
+                    hasBody -> {
+                        "body: not shown (raise `max_body_chars` to see it)"
+                    }
+
+                    else -> {
+                        "body: none captured (not textual, or capture is off for this session)"
+                    }
+                },
+            )
+        }
+
+    private fun plural(count: Int): String = if (count == 1) "" else "s"
+
+    /** Repeated wherever a model could read an empty answer as a fact about the world. */
+    private const val NOT_PROOF_OF_ABSENCE: String =
+        "This is not proof the request was never made: on iOS only the page's own `fetch` and " +
+            "`XMLHttpRequest` calls are ever captured — document loads, images and stylesheets are " +
+            "invisible — while Android and desktop see everything. Read the page with `snapshot` " +
+            "and `extract` instead."
 }

@@ -6,10 +6,14 @@ import ai.koog.agents.core.tools.ToolParameterType
 import ai.koog.serialization.kotlinx.KotlinxSerializer
 import dev.ggoggam.vitre.agent.PageDriver
 import dev.ggoggam.vitre.agent.session.WebViewSessions
+import dev.ggoggam.vitre.core.net.ExchangeOutcome
+import dev.ggoggam.vitre.core.net.NetworkExchange
+import dev.ggoggam.vitre.core.net.NetworkLog
 import dev.ggoggam.vitre.koog.testing.FakePageController
 import dev.ggoggam.vitre.koog.tools.ClickTool
 import dev.ggoggam.vitre.koog.tools.EvaluateTool
 import dev.ggoggam.vitre.koog.tools.ExtractRowsTool
+import dev.ggoggam.vitre.koog.tools.ReadNetworkTool
 import dev.ggoggam.vitre.koog.tools.SnapshotTool
 import dev.ggoggam.vitre.koog.tools.VITRE_LEASE_METADATA_KEY
 import dev.ggoggam.vitre.koog.tools.VITRE_LEASE_SESSION_METADATA_KEY
@@ -55,10 +59,13 @@ class VitreToolsTest {
             assertTrue("snapshot" in names, "$names")
             assertTrue("click" in names && "type" in names && "extract" in names, "$names")
             assertTrue("extract_rows" in names && "evaluate" in names, "$names")
+            assertTrue("read_network" in names, "$names")
             assertTrue("acquire_lease" in names && "release_lease" in names, "$names")
             // Names match the MCP server's exactly, so a system prompt written against one adapter
-            // works against the other. A drift here is a prompt that silently stops matching.
-            assertEquals(13, tools.size, "$names")
+            // works against the other. A drift here is a prompt that silently stops matching, and
+            // `VitreMcpBridgeTest` is what proves the two lists are the same rather than merely
+            // the same length.
+            assertEquals(names.distinct(), names, "a duplicate tool name: $names")
         }
 
     @Test
@@ -159,6 +166,65 @@ class VitreToolsTest {
             // every record would repeat the first row's price and the result would look fine.
             assertTrue(".//" in failure.message, failure.message)
             assertFalse(fixture.page.evaluatedScripts.any { "querySelectorAll" in it }, "it should not have run")
+        }
+
+    @Test
+    fun read_network_hands_back_the_captured_json_verbatim() =
+        runTest {
+            val fixture = Fixture(this)
+            val log = NetworkLog()
+            fixture.sessions.register("main", fixture.page, "the sample gallery's WebView", network = log)
+            log.record(
+                NetworkExchange(
+                    id = 1,
+                    method = "GET",
+                    url = "https://shop.test/api/search?q=keyboard",
+                    outcome = ExchangeOutcome.Fetched,
+                    status = 200,
+                    requestHeaders = emptyMap(),
+                    responseHeaders = emptyMap(),
+                    contentType = "application/json",
+                    body = """{"items":[{"sku":"K1","priceCents":6999}]}""",
+                    bodyTruncated = false,
+                    durationMs = 34,
+                ),
+            )
+            val tool = ReadNetworkTool(fixture.driver)
+
+            val result = tool.execute(ReadNetworkTool.Args(urlContains = "search"), ToolCallMetadata.EMPTY)
+            val forModel = tool.encodeResultToString(result, JSON_SERIALIZER)
+
+            // Verbatim, like every other page tool's reply. JSON that arrives quoted and
+            // backslash-escaped costs tokens twice and reads as a string literal rather than data.
+            assertTrue("""{"items":[{"sku":"K1","priceCents":6999}]}""" in forModel, forModel)
+            assertFalse("\\\"" in forModel, forModel)
+        }
+
+    @Test
+    fun read_network_takes_no_lease_because_it_reads_a_buffer_and_not_the_page() =
+        runTest {
+            val fixture = Fixture(this)
+            val descriptor = ReadNetworkTool(fixture.driver).descriptor
+            val arguments = (descriptor.requiredParameters + descriptor.optionalParameters).map { it.name }
+
+            // The one page tool with no `lease`, and the MCP schema has to agree — which
+            // `VitreMcpBridgeTest` checks by comparing the two argument sets outright.
+            assertFalse("lease" in arguments, "$arguments")
+            assertTrue("url_contains" in arguments && "max_body_chars" in arguments, "$arguments")
+        }
+
+    @Test
+    fun read_network_says_what_it_cannot_see_before_a_model_reads_silence_as_absence() =
+        runTest {
+            // The description is the prompt, and this tool is the one that succeeds while returning
+            // nothing. On iOS an empty answer is the *expected* result for a document load that
+            // certainly happened, so the platform gap has to be in front of the model before it
+            // calls, not only in the repo's docs.
+            val description = ReadNetworkTool(Fixture(this).driver).descriptor.description
+
+            assertTrue("iOS" in description, description)
+            assertTrue("Android" in description, description)
+            assertTrue("did not happen" in description, description)
         }
 
     @Test

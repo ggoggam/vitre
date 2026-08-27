@@ -124,7 +124,7 @@ class LiveModelDrivesThePageTest {
         val sessions = WebViewSessions().apply { register("main", page, "the shop tab") }
         val driver = PageDriver(sessions, scope)
 
-        // One cheap round trip that sends all thirteen descriptors. A schema the API rejects is a
+        // One cheap round trip that sends every descriptor. A schema the API rejects is a
         // 400 on this call, and this fails in seconds with the provider's own message rather than
         // as a mystery three tool calls into the test above.
         val agent =

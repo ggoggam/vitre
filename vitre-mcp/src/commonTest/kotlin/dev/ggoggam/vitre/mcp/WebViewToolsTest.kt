@@ -1,6 +1,9 @@
 package dev.ggoggam.vitre.mcp
 
 import dev.ggoggam.vitre.agent.session.WebViewSessions
+import dev.ggoggam.vitre.core.net.ExchangeOutcome
+import dev.ggoggam.vitre.core.net.NetworkExchange
+import dev.ggoggam.vitre.core.net.NetworkLog
 import dev.ggoggam.vitre.mcp.testing.FakePageController
 import dev.ggoggam.vitre.mcp.testing.McpTestClient
 import dev.ggoggam.vitre.mcp.testing.result
@@ -236,6 +239,78 @@ class WebViewToolsTest {
             assertTrue("main" in result.text, result.text)
             assertTrue("the sample gallery's WebView" in result.text, result.text)
             assertEquals(1, result.structured!!["sessions"]!!.jsonArray.size)
+        }
+
+    @Test
+    fun read_network_hands_over_the_json_the_page_fetched_rather_than_the_dom_it_rendered() =
+        runTest {
+            val fixture = Fixture(this)
+            val log = NetworkLog()
+            fixture.sessions.register("main", fixture.page, "the sample gallery's WebView", network = log)
+            log.record(
+                NetworkExchange(
+                    id = 1,
+                    method = "GET",
+                    url = "https://shop.test/api/search?q=keyboard",
+                    outcome = ExchangeOutcome.Fetched,
+                    status = 200,
+                    requestHeaders = emptyMap(),
+                    responseHeaders = emptyMap(),
+                    contentType = "application/json",
+                    body = """{"items":[{"sku":"K1","priceCents":6999}]}""",
+                    bodyTruncated = false,
+                    durationMs = 34,
+                ),
+            )
+
+            val result = fixture.client.callTool("read_network", buildJsonObject { put("url_contains", "search") })
+
+            assertFalse(result.isError, result.text)
+            // The whole reason the tool exists: a price as a number, rather than "$69.99" parsed
+            // back out of three nested spans.
+            assertTrue("\"priceCents\":6999" in result.text, result.text)
+            assertEquals(
+                1,
+                result.structured!!["matched"]!!
+                    .jsonPrimitive.content
+                    .toInt(),
+            )
+        }
+
+    @Test
+    fun read_network_on_a_session_with_no_capture_says_so_and_names_the_alternative() =
+        runTest {
+            val fixture = Fixture(this)
+
+            val result = fixture.client.callTool("read_network")
+
+            // The default fixture registers a bare controller, which is the common case: a host
+            // that never wired a tap. Answering "no traffic" would tell the model something false
+            // about the page rather than something true about the host.
+            assertTrue(result.isError, result.text)
+            assertTrue("snapshot" in result.text, result.text)
+        }
+
+    @Test
+    fun read_network_advertises_no_lease_because_it_never_touches_the_page() =
+        runTest {
+            val fixture = Fixture(this)
+
+            val schema =
+                fixture.client
+                    .legacy("tools/list")
+                    .result()["tools"]!!
+                    .jsonArray
+                    .map { it.jsonObject }
+                    .single { it["name"]!!.jsonPrimitive.content == "read_network" }["inputSchema"]!!
+                    .jsonObject["properties"]!!
+                    .jsonObject
+
+            // Every other page tool takes one. This reads a buffer, so a claim on the WebView would
+            // queue the call behind a sequence it cannot affect and a stale id would fail a read
+            // that never needed one.
+            assertFalse("lease" in schema, "$schema")
+            assertTrue("url_contains" in schema && "max_body_chars" in schema, "$schema")
         }
 
     @Test

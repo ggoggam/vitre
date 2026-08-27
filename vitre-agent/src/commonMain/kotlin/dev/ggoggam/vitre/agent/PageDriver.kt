@@ -7,6 +7,8 @@ import dev.ggoggam.vitre.agent.session.SessionLease
 import dev.ggoggam.vitre.agent.session.SessionLeases
 import dev.ggoggam.vitre.agent.session.WebViewSession
 import dev.ggoggam.vitre.agent.session.WebViewSessions
+import dev.ggoggam.vitre.core.net.ExchangeOutcome
+import dev.ggoggam.vitre.core.net.NetworkExchange
 import dev.ggoggam.vitre.core.webview.WebViewController
 import dev.ggoggam.vitre.core.workflow.Locator
 import dev.ggoggam.vitre.core.workflow.PageSnapshot
@@ -53,6 +55,61 @@ data class LeaseGrant(
     val id: String,
     val sessionId: String,
     val ttlMs: Long,
+)
+
+/**
+ * One captured request/response pair, cut down to what a model should be shown.
+ *
+ * A projection of [NetworkExchange] rather than the thing itself, because the difference between
+ * "what was captured" and "what a tool result can afford" is real: a captured body may be a quarter
+ * of a megabyte, which is a page's worth of context spent on one exchange. Doing that cut here, in
+ * the shared layer, is what stops one adapter being more generous with a model's context than the
+ * other.
+ */
+data class NetworkExchangeSummary(
+    val method: String,
+    val url: String,
+    /** 0 when the request never got a response — see [error]. */
+    val status: Int,
+    val outcome: ExchangeOutcome,
+    val contentType: String?,
+    val durationMs: Long,
+    val error: String?,
+    /** The response body as text, already cut. Null when withheld or never captured — see [hasBody]. */
+    val body: String?,
+    /**
+     * Whether a body was captured for this exchange at all.
+     *
+     * Separate from `body != null` because those two are different answers to different questions,
+     * and collapsing them is how a caller decides a JSON API returned nothing when in fact it asked
+     * not to be shown the JSON. `hasBody && body == null` means withheld — the read's cap was zero,
+     * or the response was not textual.
+     */
+    val hasBody: Boolean,
+    /**
+     * Whether [body] is less than the whole response.
+     *
+     * True if any of three caps bit: the capture policy's `maxCapturedBodyBytes`, the log's own
+     * retention cap, or this read's per-exchange cap. Which one is not worth distinguishing — the
+     * consequence is identical, and it is the consequence a model must not be allowed to miss.
+     * Reading a JSON body that was silently cut mid-object is how an agent concludes a shop stocks
+     * four items when it listed forty.
+     */
+    val bodyTruncated: Boolean,
+)
+
+/** What one `read_network` call found, and what it was drawn from. */
+data class NetworkRead(
+    /** The matches, newest first. */
+    val exchanges: List<NetworkExchangeSummary>,
+    /** The `url_contains` filter that produced them, if any. */
+    val filter: String?,
+    /** How many matched before the limit was applied. */
+    val matched: Int,
+    /** How many exchanges the log held in total. */
+    val retained: Int,
+    /** The log's own bound, so a full log can be reported as "older ones have been dropped". */
+    val capacity: Int,
 )
 
 /**
@@ -316,6 +373,86 @@ class PageDriver(
         target: PageTarget = PageTarget.Default,
     ): String = target.runStep(WorkflowStep.AwaitMessage(type, OUT, timeoutMs.clampTimeout()), expecting = OUT)
 
+    /**
+     * Reads the HTTP traffic this session captured, newest first.
+     *
+     * The point of it is that a page's own API is usually a better source than its DOM: a shop
+     * rendering results from `GET /api/search` hands over typed JSON — price a number, stock a
+     * boolean — where the rendered page offers `$1,299.00` split across three spans and a tick
+     * glyph. The capture machinery has been in `vitre-core` since the lane pool was built; until
+     * this method nothing let an agent at it.
+     *
+     * ### Why it neither suspends nor takes a lease
+     *
+     * It reads a buffer. It never touches the WebView, so there is nothing to order it against and
+     * nothing to hold: taking the session's lock would queue this call behind a sequence it cannot
+     * affect, and validating a lease id would turn a stale one into a failure for a read that never
+     * needed the claim. This is the one page tool with no `lease` argument, and that is why.
+     *
+     * ### Coverage is the platform's business, not this method's
+     *
+     * What reaches the log at all differs by platform and the gap is structural — Android and the
+     * desktop watch from below the page and see every request, iOS asks the page to report on
+     * itself and therefore sees only its script's own `fetch`/`XMLHttpRequest` calls. A model that
+     * does not know this reads an empty result as "the request did not happen". [PageToolDocs] and
+     * [PageToolReplies] both say so out loud for exactly that reason.
+     *
+     * @param maxBodyChars per-exchange cap on response body text. 0 omits bodies entirely, which is
+     *   how a caller lists what a page fetched without paying for any of it.
+     * @throws NoSuchSessionException if [session] names nothing.
+     * @throws PageDriverException if the host registered this session without a
+     *   [dev.ggoggam.vitre.core.net.NetworkLog]. Deliberately a failure rather than an empty result:
+     *   "no capture is wired here" and "nothing was captured" call for completely different next
+     *   moves, and a model told the second when the first is true will keep asking.
+     */
+    fun readNetwork(
+        urlContains: String? = null,
+        limit: Int = DEFAULT_NETWORK_LIMIT,
+        maxBodyChars: Int = DEFAULT_NETWORK_BODY_CHARS,
+        session: String? = null,
+    ): NetworkRead {
+        val resolved = sessions.resolve(session)
+        val log =
+            resolved.network ?: throw PageDriverException(
+                "Session `${resolved.id}` has no network capture wired, so there is no traffic to " +
+                    "read — this is how the host set the WebView up, not something that will change " +
+                    "if you try again. Read the page itself with `snapshot`, `extract` and " +
+                    "`extract_rows` instead.",
+            )
+        val cap = maxBodyChars.coerceIn(0, MAX_NETWORK_BODY_CHARS)
+        val query = log.query(urlContains?.takeIf { it.isNotBlank() }, limit.coerceIn(1, MAX_NETWORK_LIMIT))
+        return NetworkRead(
+            exchanges = query.exchanges.map { it.summarise(cap) },
+            filter = urlContains?.takeIf { it.isNotBlank() },
+            matched = query.matched,
+            retained = query.retained,
+            capacity = log.maxExchanges,
+        )
+    }
+
+    /**
+     * Cuts one exchange to [maxBodyChars] of body, keeping the truncation flag honest.
+     *
+     * The `||` is the load-bearing part: an exchange that arrived already truncated stays truncated
+     * even when this read's cap did not bite, because the body is still not the whole response and
+     * the caller has to know that whichever cap did it.
+     */
+    private fun NetworkExchange.summarise(maxBodyChars: Int): NetworkExchangeSummary {
+        val shown = body?.takeIf { maxBodyChars > 0 }
+        return NetworkExchangeSummary(
+            method = method,
+            url = url,
+            status = status,
+            outcome = outcome,
+            contentType = contentType,
+            durationMs = durationMs,
+            error = error,
+            body = shown?.take(maxBodyChars),
+            hasBody = body != null,
+            bodyTruncated = shown != null && (bodyTruncated || shown.length > maxBodyChars),
+        )
+    }
+
     // ── Running steps ──────────────────────────────────────────────────────────────────────────
 
     private suspend fun PageTarget.runStep(
@@ -417,6 +554,26 @@ class PageDriver(
         const val MAX_MAX_NODES: Int = 2_000
         const val DEFAULT_ROW_LIMIT: Int = 20
         const val MAX_ROW_LIMIT: Int = 200
+
+        /**
+         * How many exchanges `read_network` returns by default.
+         *
+         * Lower than [DEFAULT_ROW_LIMIT] on purpose: a row is a handful of fields and an exchange
+         * can carry a whole JSON response, so ten of these cost more context than twenty of those.
+         */
+        const val DEFAULT_NETWORK_LIMIT: Int = 10
+        const val MAX_NETWORK_LIMIT: Int = 100
+
+        /**
+         * How much of one response body `read_network` shows by default.
+         *
+         * Enough for a search API's answer, short of a rendered HTML document. The cap is on what a
+         * *model* is shown and is unrelated to `InterceptionPolicy.maxCapturedBodyBytes`, which
+         * governs what is captured in the first place — the capture cap can afford a quarter of a
+         * megabyte, a tool result cannot.
+         */
+        const val DEFAULT_NETWORK_BODY_CHARS: Int = 2_000
+        const val MAX_NETWORK_BODY_CHARS: Int = 20_000
     }
 }
 
