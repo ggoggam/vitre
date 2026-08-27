@@ -15,13 +15,11 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -55,6 +53,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.lerp
 import dev.ggoggam.vitre.compose.VitreWebView
 import dev.ggoggam.vitre.compose.rememberVitreWebViewState
 import dev.ggoggam.vitre.core.workflow.Workflow
@@ -134,10 +133,10 @@ fun WorkflowRunner(
     val density = LocalDensity.current
     var handleHeight by remember { mutableStateOf(48.dp) }
     var headerHeight by remember { mutableStateOf(52.dp) }
-    // Where the first drawable row starts: under the status bar on a phone, under nothing on the
-    // desktop. Full height stops there rather than at zero — covering the top bar is the point of
-    // it, running the timeline under the clock is not.
-    val topInset = with(density) { WindowInsets.safeDrawing.getTop(density).toDp() }
+    // Measured for the same reason, and used for the same kind of seam: it is where the full stop
+    // stops. The bar carries its own status bar inset, so its measured height is the whole of what
+    // sits above the sheet and no separate inset has to be worked out here.
+    var topBarHeight by remember { mutableStateOf(64.dp) }
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val chrome = handleHeight + headerHeight
@@ -149,12 +148,12 @@ fun WorkflowRunner(
         // Half is what the sheet used to stop at and still opens on: at most half of what the
         // runner is running in, so the page it reports on never disappears behind it, and no more
         // than the flat cap, which on a phone in portrait is roomier than the timeline needs.
-        // Full takes the whole pane, top bar included — a long timeline or a long MCP transcript is
-        // worth the screen, and neither control the bar holds is lost with it: system back leaves
-        // the runner (see `App`), and the header's chevron, now at the top of the screen, is what
-        // puts the bar back.
+        // Full takes everything below the top bar — a long timeline or a long MCP transcript is
+        // worth the rest of the screen — but not the bar itself, which names the workflow and the
+        // page it is on and holds the only back and re-run there are. A sheet that covered it would
+        // also stop reading as a sheet over something.
         val peekHeight = chrome
-        val fullHeight = (maxHeight - topInset).coerceAtLeast(peekHeight)
+        val fullHeight = (maxHeight - topBarHeight).coerceAtLeast(peekHeight)
         val halfHeight = (chrome + MAX_SHEET_DETAIL_HEIGHT).coerceAtMost(maxHeight / 2).coerceIn(peekHeight, fullHeight)
 
         val peekPx = with(density) { peekHeight.toPx() }
@@ -181,10 +180,10 @@ fun WorkflowRunner(
         // is still the guessed height, and a rotation. Keyed on the stop positions, so a drag,
         // which moves the sheet without moving them, is never interrupted by it.
         LaunchedEffect(peekPx, halfPx, fullPx) { sheetHeightPx.snapTo(pxOf(stop)) }
-        // Full height covers the top bar, and with it the only visible way back. System back undoes
-        // that before it leaves the runner, so the gesture always undoes the last thing that
-        // happened rather than two things at once. Declared after `App`'s handler and so ahead of
-        // it in the dispatcher, which is what lets it take the first press.
+        // Back undoes the last thing that happened rather than two things at once: with the detail
+        // up over the page, the first press puts it down and the second leaves the runner. Declared
+        // after `App`'s handler and so ahead of it in the dispatcher, which is what lets it take
+        // that first press.
         PlatformBackHandler(enabled = stop == SheetStop.Full) {
             scope.launch { settleTo(SheetStop.Half) }
         }
@@ -220,6 +219,10 @@ fun WorkflowRunner(
             modifier = Modifier.fillMaxSize(),
             topBar = {
                 TopAppBar(
+                    modifier =
+                        Modifier.onSizeChanged {
+                            topBarHeight = with(density) { it.height.toDp() }
+                        },
                     title = {
                         Column {
                             Text(
@@ -272,10 +275,21 @@ fun WorkflowRunner(
             }
         }
 
-        // A sibling of the scaffold rather than its sheet slot, which is what lets the full stop
-        // cover the top bar. What it gives up with the slot is the scaffold's own expand/collapse
-        // accessibility actions on the handle; the header is a labelled click target and the
-        // chevron a labelled button, so both transitions are still reachable without the gesture.
+        // A sibling of the scaffold rather than its sheet slot, because the slot comes with the
+        // scaffold's own two-anchor drag and that is the thing being replaced. What it gives up
+        // with the slot is the scaffold's expand/collapse accessibility actions on the handle; the
+        // header is a labelled click target and the chevron a labelled button, so both transitions
+        // are still reachable without the gesture. Being a sibling also means the sheet runs to the
+        // screen edge rather than to the scaffold's inset content box, which is what lets the peek
+        // tuck its chrome against the gesture bar.
+        // The corners square off over the last stretch of the climb to full height. Rounded, they
+        // leave two slivers of page showing in the gap between the sheet's top edge and the bar
+        // above it, which reads as the sheet having failed to reach the top rather than as a
+        // radius. Driven off the sheet's own height rather than off `stop`, so it tracks the drag
+        // continuously and is already square by the time the finger arrives — a radius that waited
+        // for the gesture to end would snap.
+        val squareness = ((sheetHeightPx.value - halfPx) / (fullPx - halfPx).coerceAtLeast(1f)).coerceIn(0f, 1f)
+        val sheetCorner = lerp(SHEET_CORNER_RADIUS, 0.dp, squareness)
         Surface(
             modifier =
                 Modifier
@@ -283,7 +297,7 @@ fun WorkflowRunner(
                     .fillMaxWidth()
                     .height(with(density) { sheetHeightPx.value.toDp() }),
             color = MaterialTheme.colorScheme.surfaceContainerLow,
-            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+            shape = RoundedCornerShape(topStart = sheetCorner, topEnd = sheetCorner),
             shadowElevation = 12.dp,
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
@@ -503,6 +517,9 @@ private fun SectionLabel(text: String) {
         modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp),
     )
 }
+
+/** The sheet's corner radius everywhere below full height, where it squares off. */
+private val SHEET_CORNER_RADIUS = 20.dp
 
 private val MAX_SHEET_DETAIL_HEIGHT = 300.dp
 
