@@ -194,11 +194,9 @@ class AndroidWebViewController(
          * unconditionally, whether or not the app is installed — but nothing about the rule is
          * specific to it.
          *
-         * Deciding by what the WebView can *render*, rather than by blocklisting the schemes seen
-         * so far, is the part worth keeping: an app scheme this list has never heard of is refused
-         * for the same reason `intent` is. `about`, `data`, `blob` and `file` are here because the
-         * library itself navigates to them — `about:blank` is where a hosted WebView starts, and
-         * `loadHtml` gives a document a `data:` or custom base URL to run relative URLs against.
+         * The scheme list, and the reasoning for deciding by what the WebView can *render* rather
+         * than by blocklisting the schemes seen so far, live in [RENDERABLE_SCHEMES] — shared with
+         * iOS's `decidePolicyForNavigationAction` so the two platforms cannot drift.
          *
          * Not called for the app's own `loadUrl`/`loadDataWithBaseURL` calls, so this sits on
          * page-initiated navigation only and no step can be refused by it.
@@ -206,7 +204,7 @@ class AndroidWebViewController(
         override fun shouldOverrideUrlLoading(
             view: WebView,
             request: WebResourceRequest,
-        ): Boolean = request.url.scheme?.lowercase() !in RENDERABLE_SCHEMES
+        ): Boolean = !isRenderableScheme(request.url.scheme)
 
         override fun onPageStarted(
             view: WebView,
@@ -243,12 +241,6 @@ class AndroidWebViewController(
 
     private companion object {
         const val BRIDGE_NAME = "vitre"
-
-        /**
-         * The schemes a WebView can produce a document from, and so the ones
-         * [PageLoadWebViewClient.shouldOverrideUrlLoading] lets a page navigate itself to.
-         */
-        val RENDERABLE_SCHEMES = setOf("http", "https", "about", "data", "blob", "file")
 
         /**
          * What the platform hands us for a frame with an opaque origin — a sandboxed iframe, a

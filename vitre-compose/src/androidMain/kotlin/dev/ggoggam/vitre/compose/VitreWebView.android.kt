@@ -1,6 +1,5 @@
 package dev.ggoggam.vitre.compose
 
-import android.annotation.SuppressLint
 import android.util.Log
 import android.webkit.WebView
 import androidx.compose.runtime.Composable
@@ -10,10 +9,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import dev.ggoggam.vitre.core.webview.AndroidWebViewController
 import dev.ggoggam.vitre.core.webview.PageLoadException
+import dev.ggoggam.vitre.core.webview.applyVitreLayoutParams
+import dev.ggoggam.vitre.core.webview.applyVitreWebSettings
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
 
-@SuppressLint("SetJavaScriptEnabled")
 @Composable
 actual fun VitreWebView(
     state: VitreWebViewState,
@@ -28,8 +28,15 @@ actual fun VitreWebView(
         modifier = modifier,
         factory = { context ->
             WebView(context).apply {
-                settings.javaScriptEnabled = true
-                settings.domStorageEnabled = true
+                // Without this every CSS viewport-height unit in the page resolves to zero and a
+                // page laid out in `vh` paints blank with its DOM intact — see
+                // applyVitreLayoutParams. Compose leaves a view it did not create at WRAP_CONTENT,
+                // which is exactly the case that triggers it. The `modifier` above still decides
+                // the view's real size; this settles what the WebView believes about it.
+                applyVitreLayoutParams()
+                // JavaScript, DOM storage and the user agent, in one place so this host and
+                // AndroidWebViewPool's lanes cannot drift apart.
+                applyVitreWebSettings()
                 // No webViewClient here: AndroidWebViewController installs its own to observe page
                 // loads, and overwriting it would break every awaited navigate().
                 val controller = AndroidWebViewController(this)

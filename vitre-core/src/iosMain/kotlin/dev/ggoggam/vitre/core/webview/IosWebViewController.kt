@@ -11,6 +11,8 @@ import platform.Foundation.NSURL
 import platform.Foundation.NSURLRequest
 import platform.WebKit.WKFrameInfo
 import platform.WebKit.WKNavigation
+import platform.WebKit.WKNavigationAction
+import platform.WebKit.WKNavigationActionPolicy
 import platform.WebKit.WKNavigationDelegateProtocol
 import platform.WebKit.WKScriptMessage
 import platform.WebKit.WKScriptMessageHandlerProtocol
@@ -200,6 +202,43 @@ class IosWebViewController(
         private val scriptResults: ScriptResults,
     ) : NSObject(),
         WKNavigationDelegateProtocol {
+        /**
+         * Set when [decidePolicyForNavigationAction] has just refused a scheme, and read once by
+         * [didFailProvisionalNavigation] below.
+         *
+         * Cancelling a *redirect* — which is the case that matters, since a handoff is something
+         * the page decides after it has already begun loading — reaches WebKit as a failed
+         * provisional navigation, and reporting that to the serializer would fail the very
+         * navigation this refusal exists to protect. Android has no equivalent flag because
+         * `shouldOverrideUrlLoading` returning true produces no error callback at all; this is the
+         * cost of expressing the same policy through WebKit's API.
+         */
+        private var refusedScheme = false
+
+        /**
+         * Refuses page-initiated navigations to schemes this WebView cannot render a document from
+         * — the counterpart to Android's `shouldOverrideUrlLoading`, and for the same reasons. See
+         * [RENDERABLE_SCHEMES].
+         *
+         * iOS reaches this by a different route than Android does. `WKWebView` has no `wv` token in
+         * its user agent for a site to key on, so the app-handoff redirect fires far less often
+         * here — but `comgooglemaps://`, `itms-apps://` and every vendor scheme still exist, and
+         * without this a page that tries one takes the workflow down with it.
+         */
+        @ObjCSignatureOverride
+        override fun webView(
+            webView: WKWebView,
+            decidePolicyForNavigationAction: WKNavigationAction,
+            decisionHandler: (WKNavigationActionPolicy) -> Unit,
+        ) {
+            if (isRenderableScheme(decidePolicyForNavigationAction.request.URL?.scheme)) {
+                decisionHandler(WKNavigationActionPolicy.WKNavigationActionPolicyAllow)
+            } else {
+                refusedScheme = true
+                decisionHandler(WKNavigationActionPolicy.WKNavigationActionPolicyCancel)
+            }
+        }
+
         @ObjCSignatureOverride
         override fun webView(
             webView: WKWebView,
@@ -219,13 +258,27 @@ class IosWebViewController(
             didFinishNavigation: WKNavigation?,
         ) = serializer.finished()
 
-        /** The document never began loading — bad host, no network, cancelled redirect. */
+        /**
+         * The document never began loading — bad host, no network, cancelled redirect.
+         *
+         * A cancellation this delegate caused is swallowed: refusing an `intent://`-style handoff
+         * leaves the previous document in place and on screen, which is a success for the workflow
+         * driving it, not a page-load failure. Only the flag set by
+         * [decidePolicyForNavigationAction] is trusted for that — matching on the error code would
+         * also swallow a genuine cancellation the host asked for.
+         */
         @ObjCSignatureOverride
         override fun webView(
             webView: WKWebView,
             didFailProvisionalNavigation: WKNavigation?,
             withError: NSError,
-        ) = serializer.failed(withError.localizedDescription)
+        ) {
+            if (refusedScheme) {
+                refusedScheme = false
+                return
+            }
+            serializer.failed(withError.localizedDescription)
+        }
 
         /** The document committed but then failed part-way through. */
         @ObjCSignatureOverride
