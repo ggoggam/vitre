@@ -2,12 +2,12 @@ package dev.ggoggam.vitre.core.workflow
 
 sealed class WorkflowEvent {
     data class StepStarted(
-        val index: Int,
+        val path: StepPath,
         val step: WorkflowStep,
     ) : WorkflowEvent()
 
     data class StepCompleted(
-        val index: Int,
+        val path: StepPath,
     ) : WorkflowEvent()
 
     data class Completed(
@@ -15,7 +15,7 @@ sealed class WorkflowEvent {
     ) : WorkflowEvent()
 
     data class Failed(
-        val stepIndex: Int,
+        val path: StepPath,
         val message: String,
     ) : WorkflowEvent()
 }

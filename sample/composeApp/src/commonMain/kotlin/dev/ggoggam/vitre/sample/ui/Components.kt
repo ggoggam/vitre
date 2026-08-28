@@ -42,8 +42,14 @@ private fun StepState.badgeColors(): Pair<Color, Color> {
     val scheme = MaterialTheme.colorScheme
     return when (this) {
         StepState.Pending -> scheme.surfaceContainerHighest to scheme.onSurfaceVariant
+
         StepState.Running -> scheme.primary to scheme.onPrimary
+
         StepState.Done -> scheme.tertiary to scheme.onTertiary
+
+        // Dimmer than pending, because a skipped step is settled rather than still to come.
+        StepState.Skipped -> scheme.surfaceContainerHigh to scheme.outline
+
         StepState.Failed -> scheme.error to scheme.onError
     }
 }
@@ -54,7 +60,6 @@ private fun StepState.badgeColors(): Pair<Color, Color> {
 @Composable
 fun StatusPill(
     state: RunState,
-    stepCount: Int,
     modifier: Modifier = Modifier,
 ) {
     val scheme = MaterialTheme.colorScheme
@@ -66,7 +71,7 @@ fun StatusPill(
 
             RunStatus.Running -> {
                 Triple(
-                    "Running ${state.completedCount}/$stepCount",
+                    "Running ${state.completedCount}/${state.stepCount}",
                     scheme.onPrimaryContainer,
                     scheme.primaryContainer,
                 )
@@ -100,6 +105,10 @@ fun StatusPill(
 
 /**
  * One row of the step timeline: a state-coloured index badge, the step type, and its arguments.
+ *
+ * [depth] is how many `If` branches the step sits inside, and it is rendered as an indent rather
+ * than as a label. The badge restarts at 1 inside a branch, which is what the step's own path says
+ * and what makes a `0.then.1` in a failure message findable by eye.
  */
 @Composable
 fun StepRow(
@@ -107,12 +116,16 @@ fun StepRow(
     step: WorkflowStep,
     state: StepState,
     modifier: Modifier = Modifier,
+    depth: Int = 0,
 ) {
     val (fill, ink) = state.badgeColors()
     val badgeColor by animateColorAsState(fill)
     val badgeInk by animateColorAsState(ink)
     Row(
-        modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        modifier =
+            modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp + (depth * 20).dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Box(

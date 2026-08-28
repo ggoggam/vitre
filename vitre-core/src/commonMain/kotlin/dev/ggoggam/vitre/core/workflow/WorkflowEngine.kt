@@ -9,6 +9,7 @@ import dev.ggoggam.vitre.core.webview.evaluate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withTimeoutOrNull
@@ -36,14 +37,8 @@ class WorkflowEngine(
     fun run(workflow: Workflow): Flow<WorkflowEvent> =
         flow {
             val variables = mutableMapOf<String, String>()
-            var index = 0
             try {
-                for ((i, step) in workflow.steps.withIndex()) {
-                    index = i
-                    emit(WorkflowEvent.StepStarted(i, step))
-                    dispatch(step, variables)
-                    emit(WorkflowEvent.StepCompleted(i))
-                }
+                runSteps(workflow.steps, variables) { StepPath.root(it) }
                 emit(WorkflowEvent.Completed(variables.toMap()))
             } catch (cancellation: CancellationException) {
                 // Every timeout the library imposes on itself is converted to a plain exception at
@@ -52,10 +47,123 @@ class WorkflowEngine(
                 // here can only mean the collector gave up on us. Reporting that as a workflow
                 // failure would both lie and break the caller's structured concurrency.
                 throw cancellation
-            } catch (t: Throwable) {
-                emit(WorkflowEvent.Failed(index, t.message ?: "unknown error"))
+            } catch (failure: StepFailure) {
+                emit(WorkflowEvent.Failed(failure.path, failure.reason))
             }
         }.flowOn(context)
+
+    /**
+     * Runs one list of steps, which is either the workflow's own or a branch of a
+     * [WorkflowStep.If], and emits an event pair for each.
+     *
+     * [pathOf] turns a position in *this* list into the path that names it from the workflow's root,
+     * so a branch's steps report `2.then.0` without this function knowing where it sits.
+     *
+     * A composite step's own [WorkflowEvent.StepCompleted] is emitted after its branch has finished,
+     * so the stream nests the way the steps do: `If` started, child started, child completed, `If`
+     * completed. A caller that only wants the leaves can ignore the composites; a caller drawing a
+     * tree gets the structure for free.
+     */
+    private suspend fun FlowCollector<WorkflowEvent>.runSteps(
+        steps: List<WorkflowStep>,
+        variables: MutableMap<String, String>,
+        pathOf: (Int) -> StepPath,
+    ) {
+        for ((index, step) in steps.withIndex()) {
+            val path = pathOf(index)
+            emit(WorkflowEvent.StepStarted(path, step))
+            if (step is WorkflowStep.If) {
+                val taken = evaluate(step.condition, variables, path)
+                val branch = if (taken) StepPath.Branch.Then else StepPath.Branch.Else
+                val body = if (taken) step.then else step.otherwise
+                runSteps(body, variables) { path.child(branch, it) }
+            } else {
+                attempt(path) { dispatch(step, variables) }
+            }
+            emit(WorkflowEvent.StepCompleted(path))
+        }
+    }
+
+    /**
+     * Runs [body], and labels anything it throws with the path of the step that threw.
+     *
+     * The path has to be attached here rather than reconstructed at the top, because by the time an
+     * exception reaches `run` the recursion that knew where it came from has already unwound. An
+     * exception that is already a [StepFailure] passes through untouched, so the *innermost* step is
+     * the one reported rather than every enclosing [WorkflowStep.If] overwriting it on the way out.
+     */
+    private suspend fun <T> attempt(
+        path: StepPath,
+        body: suspend () -> T,
+    ): T =
+        try {
+            body()
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (failure: StepFailure) {
+            throw failure
+        } catch (t: Throwable) {
+            throw StepFailure(path, t.message ?: "unknown error")
+        }
+
+    /**
+     * Answers [condition] against the page and the variables set so far.
+     *
+     * Everything that can go wrong here is a workflow bug rather than a page state — an unset
+     * variable, an uncompilable regex, a script that throws — so all of it fails the step. The one
+     * question with a legitimate negative answer is [Condition.Exists], and it is the only branch
+     * that turns "not there" into `false` instead of an error. See [Condition.Exists] for why that
+     * makes a stale handle behave differently here than in every other step.
+     */
+    private suspend fun evaluate(
+        condition: Condition,
+        variables: Map<String, String>,
+        path: StepPath,
+    ): Boolean =
+        when (condition) {
+            is Condition.Exists -> {
+                attempt(path) { controller.evaluate("${LocatorJs.first(condition.locator)}!==null") }
+            }
+
+            is Condition.VariableEquals -> {
+                variables.require(condition.name, path).equals(condition.value, ignoreCase = condition.ignoreCase)
+            }
+
+            is Condition.VariableMatches -> {
+                val regex =
+                    runCatching { Regex(condition.regex) }
+                        .getOrElse { throw StepFailure(path, "Not a valid regex: /${condition.regex}/") }
+                regex.containsMatchIn(variables.require(condition.name, path))
+            }
+
+            is Condition.JsTruthy -> {
+                // Wrapped rather than decoded loosely: the page decides truthiness, so `0`, `""` and
+                // `undefined` come back as the `false` JS says they are instead of this side having
+                // to reimplement the rules and get one of them wrong.
+                attempt(path) { controller.evaluate("!!(${condition.script})") }
+            }
+
+            is Condition.Not -> {
+                !evaluate(condition.of, variables, path)
+            }
+
+            is Condition.AllOf -> {
+                condition.of.all { evaluate(it, variables, path) }
+            }
+
+            is Condition.AnyOf -> {
+                condition.of.any { evaluate(it, variables, path) }
+            }
+        }
+
+    private fun Map<String, String>.require(
+        name: String,
+        path: StepPath,
+    ): String =
+        this[name] ?: throw StepFailure(
+            path,
+            "No variable `$name`. The workflow set: ${keys.sorted().joinToString(", ").ifEmpty { "nothing" }}",
+        )
 
     private suspend fun dispatch(
         step: WorkflowStep,
@@ -133,6 +241,12 @@ class WorkflowEngine(
                 controller.bridge.postToWebView(step.message)
             }
 
+            is WorkflowStep.If -> {
+                // Unreachable: runSteps handles a composite step itself, because dispatching one
+                // would mean running its branch outside the recursion that numbers the steps.
+                error("If is executed by runSteps, not dispatch")
+            }
+
             is WorkflowStep.AwaitMessage -> {
                 // Unbounded before: a page that never posts the type being waited for wedged the
                 // workflow with no event, no error and no way back. The bound and the decode both
@@ -194,6 +308,18 @@ class WorkflowEngine(
     }
 }
 
+/**
+ * A step's failure, carrying the path of the step it came from.
+ *
+ * Internal to the engine and never emitted: `run` unwraps it into [WorkflowEvent.Failed]. It exists
+ * only because the recursion that knows *where* a step is has unwound by the time the exception
+ * reaches the top, so the path has to travel with the throw.
+ */
+private class StepFailure(
+    val path: StepPath,
+    val reason: String,
+) : Exception(reason)
+
 /** Every element this step addresses, so a handle-aware caller can vet them before acting. */
 private fun WorkflowStep.locators(): List<Locator> =
     when (this) {
@@ -207,6 +333,9 @@ private fun WorkflowStep.locators(): List<Locator> =
 
         is WorkflowStep.ExtractRows -> listOf(rows) + columns.values.map { it.locator }
 
+        // Not the branches': a handle inside one is only worth vetting if that branch is taken,
+        // and the condition's own locator is deliberately exempt — see Condition.Exists.
+        is WorkflowStep.If,
         is WorkflowStep.Navigate,
         is WorkflowStep.LoadHtml,
         is WorkflowStep.Snapshot,

@@ -118,7 +118,7 @@ fun WorkflowRunner(
 
     var mcpTranscript by remember(workflow.id) { mutableStateOf<String?>(null) }
 
-    val state = runStateOf(workflow.steps.size, events)
+    val state = runStateOf(workflow, events)
     val scope = rememberCoroutineScope()
     // Which stop the sheet is settled on. The drag reaches all three; the header's tap and its
     // chevron are shortcuts to two of the transitions, for anyone who would rather not drag.
@@ -358,7 +358,6 @@ private fun RunSheet(
     Column(modifier = modifier.fillMaxWidth()) {
         SheetHeader(
             state = state,
-            stepCount = workflow.steps.size,
             expanded = expanded,
             fullHeight = fullHeight,
             onToggle = onToggle,
@@ -379,11 +378,12 @@ private fun RunSheet(
                     .padding(bottom = 16.dp),
         ) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            workflow.steps.forEachIndexed { index, step ->
+            workflow.flatSteps().forEach { flat ->
                 StepRow(
-                    index = index,
-                    step = step,
-                    state = state.stepStates.getOrElse(index) { StepState.Pending },
+                    index = flat.path.index,
+                    step = flat.step,
+                    state = state.stateOf(flat.path),
+                    depth = flat.depth,
                 )
             }
             state.error?.let { message ->
@@ -461,7 +461,6 @@ private fun McpSection(
 @Composable
 private fun SheetHeader(
     state: RunState,
-    stepCount: Int,
     expanded: Boolean,
     fullHeight: Boolean,
     onToggle: () -> Unit,
@@ -482,10 +481,12 @@ private fun SheetHeader(
                 ).padding(start = 16.dp, end = 4.dp, top = 2.dp, bottom = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        StatusPill(state = state, stepCount = stepCount)
+        StatusPill(state = state)
         Spacer(Modifier.width(12.dp))
         Text(
-            text = state.runningStep?.let { "step ${it + 1} of $stepCount" } ?: "$stepCount steps",
+            text =
+                state.runningOrdinal?.let { "step ${it + 1} of ${state.stepCount}" }
+                    ?: "${state.stepCount} steps",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f),

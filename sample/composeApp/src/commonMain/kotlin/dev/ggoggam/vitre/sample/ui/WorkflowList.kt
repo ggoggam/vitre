@@ -291,10 +291,13 @@ private fun StepChips(
     isSelected: Boolean,
 ) {
     val scheme = MaterialTheme.colorScheme
-    val shown = workflow.steps.take(MAX_CHIPS)
-    val overflow = workflow.steps.size - shown.size
+    // Flattened, so a workflow whose interesting steps all live inside an `If` is not described by
+    // a single "If" chip.
+    val all = workflow.flatSteps()
+    val shown = all.take(MAX_CHIPS)
+    val overflow = all.size - shown.size
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        shown.forEach { step -> Pill(text = step.label(), isSelected = isSelected) }
+        shown.forEach { flat -> Pill(text = flat.step.label(), isSelected = isSelected) }
         if (overflow > 0) {
             Text(
                 text = "+$overflow",

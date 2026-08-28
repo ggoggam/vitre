@@ -160,4 +160,27 @@ sealed class WorkflowStep {
     data class PostMessage(
         val message: String,
     ) : WorkflowStep()
+
+    /**
+     * Runs [then] when [condition] holds, and [otherwise] when it does not.
+     *
+     * The first step that contains steps, and the first that makes a workflow something other than
+     * a straight line. What it is for is the page that is *sometimes* there — a cookie banner, an
+     * interstitial, a "did you mean" page, a login form that only appears when the session lapsed.
+     * Before this, the only ways to handle one were to fail the whole run or to smuggle the branch
+     * into an [EvaluateJs] blob the engine cannot report on.
+     *
+     * **This is not the `if` you write in a `workflow { }` block.** Ordinary Kotlin `if` in a
+     * builder still runs at *build* time and decides what the workflow contains; this one is part of
+     * the workflow and runs against the page, where it can see what an earlier step extracted. The
+     * DSL calls it `runIf` so the two cannot be confused at a glance — see [WorkflowScope.runIf].
+     *
+     * Nesting is unbounded, and step numbering follows it: a failure inside a branch reports a
+     * [StepPath] like `2.then.0` rather than a flat index that would mean nothing.
+     */
+    data class If(
+        val condition: Condition,
+        val then: List<WorkflowStep>,
+        val otherwise: List<WorkflowStep> = emptyList(),
+    ) : WorkflowStep()
 }

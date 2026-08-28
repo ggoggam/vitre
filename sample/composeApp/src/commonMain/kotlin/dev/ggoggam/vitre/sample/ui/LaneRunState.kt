@@ -28,7 +28,7 @@ data class LaneRun(
     val events: List<WorkflowEvent>,
     val elapsedMs: Long?,
 ) {
-    val state: RunState = runStateOf(workflow.steps.size, events)
+    val state: RunState = runStateOf(workflow, events)
 
     /** Empty until the lane completes: a half-scraped page yields half a price list. */
     val offers: List<Offer> =

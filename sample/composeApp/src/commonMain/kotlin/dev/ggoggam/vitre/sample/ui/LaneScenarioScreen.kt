@@ -559,7 +559,7 @@ private fun LanesTab(runs: List<LaneRun>) {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    StatusPill(state = run.state, stepCount = run.workflow.steps.size)
+                    StatusPill(state = run.state)
                 }
                 Text(
                     text =

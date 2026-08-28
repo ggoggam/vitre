@@ -52,7 +52,7 @@ class WaitForStepTest {
             val events = WorkflowEngine(controller, EmptyCoroutineContext).run(workflow).toList()
 
             val failed = assertIs<WorkflowEvent.Failed>(events.last())
-            assertEquals(0, failed.stepIndex)
+            assertEquals(StepPath.root(0), failed.path)
             assertTrue("Timeout" in failed.message, "unexpected failure message: ${failed.message}")
         }
 
