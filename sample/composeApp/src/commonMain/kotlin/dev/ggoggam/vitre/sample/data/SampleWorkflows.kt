@@ -2,7 +2,9 @@ package dev.ggoggam.vitre.sample.data
 
 import dev.ggoggam.vitre.core.workflow.Workflow
 import dev.ggoggam.vitre.core.workflow.WorkflowStep.Extract.Source
+import dev.ggoggam.vitre.core.workflow.exists
 import dev.ggoggam.vitre.core.workflow.handle
+import dev.ggoggam.vitre.core.workflow.variableMatches
 import dev.ggoggam.vitre.core.workflow.workflow
 import dev.ggoggam.vitre.core.workflow.xpath
 import kotlinx.serialization.Serializable
@@ -131,6 +133,40 @@ object SampleWorkflows {
                 column("rating", xpath(".//*[contains(@aria-label,'out of 5')]"), from = Source.Attribute("aria-label"))
                 // Up to the row, then back down — CSS has no parent combinator.
                 column("seller", xpath(".//span[@class='price']/ancestor::li[1]//span[@class='seller']"))
+            }
+        }
+
+    /**
+     * Two branches the page decides, not the builder — the demo for `runIf`.
+     *
+     * The first is the shape that motivates the step at all: an element that is only *sometimes*
+     * there. This fixture never shows a consent banner, so the else branch runs, and that is a
+     * completed run rather than a failure — which is the whole difference from putting a `WaitFor`
+     * on something optional.
+     *
+     * The second branches on a value the run itself produced. Nothing at build time can know what
+     * `#KB-1002`'s stock line says, so no amount of Kotlin `if` around these lines could express
+     * it: the fixture lists that row as out of stock, so the workflow reads the substitute's price
+     * instead of the one it came for.
+     *
+     * Watch the step list while it runs — the branch that is not taken greys out rather than
+     * staying pending, and the steps inside a branch are numbered and indented under it.
+     */
+    val ConditionalSteps =
+        workflow(id = "conditional-steps", name = "Branching on the page (if / else)") {
+            loadHtml(html = RESULTS_HTML, baseUrl = FIXTURE_ORIGIN)
+            waitFor("#results", timeoutMs = 5_000)
+            runIf(exists("#cookie-banner"), otherwise = { evaluateJs("'none shown'", into = "consent") }) {
+                click("#cookie-banner .accept")
+                evaluateJs("'accepted'", into = "consent")
+            }
+            extract(xpath("//li[@data-sku='KB-1002']//span[contains(@class,'stock')]"), into = "stock")
+            runIf(
+                variableMatches("stock", "Out of stock"),
+                otherwise = { extract(xpath("//li[@data-sku='KB-1002']//span[@class='price']"), into = "price") },
+            ) {
+                extract(xpath("//li[@data-sku='KB-1003']//h3/@data-full-title"), into = "substitute")
+                extract(xpath("//li[@data-sku='KB-1003']//span[@class='price']"), into = "price")
             }
         }
 
@@ -487,6 +523,7 @@ object SampleWorkflows {
             BridgeRoundTrip,
             FormEcho,
             FixtureSearchResults,
+            ConditionalSteps,
             ExampleDotComTitle,
         )
 }

@@ -27,8 +27,9 @@ drop into a screen, and, for an agent that has never seen the page, as MCP tools
 Those last two are two deliveries of one set of semantics rather than two implementations of them.
 
 The block is a builder rather than a script. It runs once, up front, to assemble the step list that
-`WorkflowEngine` then walks, so ordinary Kotlin control flow inside it chooses what the workflow
-contains. It cannot branch on the page or on a variable an earlier step extracted. The
+`WorkflowEngine` then walks, so ordinary Kotlin `if` inside it chooses what the workflow *contains*.
+When the decision belongs to the run instead — an element that is only sometimes there, a value an
+earlier step extracted — `runIf` appends a step the engine evaluates against the page. The
 `WorkflowStep` constructors remain public and equivalent; they are what `vitre-mcp` uses, since
 an agent's steps arrive as JSON rather than as Kotlin.
 
@@ -43,7 +44,8 @@ Vitre makes the page something you can drive: one ordering guarantee, one step v
 codebase for every platform, and a snapshot format an agent can read.
 
 - The steps are declarative: `Navigate`, `LoadHtml`, `WaitFor`, `Click`, `Input`, `Extract`,
-  `ExtractRows`, `Snapshot`, `EvaluateJs`, `PostMessage`, `AwaitMessage`.
+  `ExtractRows`, `Snapshot`, `EvaluateJs`, `PostMessage`, `AwaitMessage`, and `If` for the branches
+  the page decides rather than the builder.
 - Elements are addressed three ways: CSS, XPath, and handles issued by a page snapshot.
 - `evaluateJs` returns a script's result JSON-encoded on every platform, so
   `controller.evaluate<Boolean>(…)` decodes it instead of comparing it against `"true"`.
@@ -225,7 +227,41 @@ val ready: Boolean = controller.evaluate("document.readyState==='complete'")
 val rows: List<Product> = controller.evaluate("Array.from(document.querySelectorAll('li')).map(toRow)")
 ```
 
-### 4. Search four sites at once
+### 4. Handle the page that is only sometimes there
+
+A cookie banner, an interstitial, a login form that appears when the session lapsed. `waitFor` is
+the wrong tool for all of them — it fails the run when the thing legitimately is not there — and a
+Kotlin `if` in the builder cannot help, because it has already finished running by the time the page
+loads.
+
+`runIf` appends a `WorkflowStep.If` the engine evaluates in place. Conditions are values, not JS
+strings, so a failure can name what went wrong: `exists`, `variableEquals`, `variableMatches`,
+`jsTruthy`, combined with `and` / `or` / `not`.
+
+```kotlin
+navigate("https://shop.example.com/cart")
+
+// Neither outcome is a failure. The banner is dismissed if it is there, and skipped if it is not.
+runIf(exists("#cookie-banner")) {
+    click("#cookie-banner .accept")
+}
+
+extract("#checkout-status", into = "status")
+
+// Branching on a value the run itself produced — nothing at build time knows what this says.
+runIf(variableMatches("status", "session expired"), otherwise = { click("#pay") }) {
+    click("#sign-in")
+    input("#password", secret)
+    waitFor("#checkout-status")
+}
+```
+
+Branches nest, and step numbering nests with them: a failure inside one reports a `StepPath` like
+`3.then.1` rather than a flat index that would point at the `If` — the one step that did not fail.
+`Exists` is deliberately the one condition where a missing element is an answer instead of an error,
+including for a stale snapshot handle, which every other step rejects outright.
+
+### 5. Search four sites at once
 
 One WebView per lane, each loading its site as a top-level document, which is what keeps sessions
 first-party and `X-Frame-Options` out of the picture. Hand the pool every workflow and it drains
@@ -250,7 +286,7 @@ The sample's Price scout does exactly this: four synthetic shops at four distinc
 and ranked by delivered price, which for most of the catalogue is a different shop from the cheapest
 sticker price.
 
-### 5. Offline, deterministic page tests
+### 6. Offline, deterministic page tests
 
 A `RequestHandler` answers requests from memory, so a test drives a real WebView against a real
 origin with no network and no flake. This is how the parallel-lane demo stays a usable smoke test.
@@ -272,7 +308,7 @@ exception, since `WKURLSchemeHandler` refuses to register for `https`, so fixtur
 from a private scheme and nothing can rewrite a response header. The failure modes are spelled out
 in [docs/PARALLEL-LANES.md](docs/PARALLEL-LANES.md).
 
-### 6. Let an agent drive the page
+### 7. Let an agent drive the page
 
 `Snapshot` answers the question a hand-written workflow never has to ask: what is on this page? It
 returns the interactive and text-bearing elements as an indented outline with a handle each, the
@@ -309,7 +345,7 @@ It ships an in-process transport only, on purpose: a loopback socket would expos
 anything on the device that can reach the port, and on a WebView signed into the user's accounts
 that leaks the session, not merely the automation. See [docs/MCP.md](docs/MCP.md).
 
-### 7. Give a Koog agent the same page
+### 8. Give a Koog agent the same page
 
 If the agent is written with [Koog](https://github.com/JetBrains/koog), `vitre-koog` hands it the
 same thirteen tools as Kotlin objects, with typed arguments, no server, and the same names, so a
