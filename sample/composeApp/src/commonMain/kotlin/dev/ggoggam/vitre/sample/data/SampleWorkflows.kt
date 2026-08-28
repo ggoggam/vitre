@@ -213,17 +213,33 @@ object SampleWorkflows {
      *
      * Every other live workflow here reads a server-rendered page, where the answer is in the HTML
      * before any script runs and the only question is which selector names it. Maps is the other
-     * kind. It arrives as a map, the results do not exist in the DOM at all until a control is
-     * pressed, and a modal sits over the whole thing on first load. Three of the four steps below
-     * are there to get the page into a state where there is anything to extract — which is what
-     * driving a real application usually costs.
+     * kind. It arrives as a map and the results do not exist in the DOM at all until a control is
+     * pressed, so two of the steps below are there purely to get the page into a state where there
+     * is anything to extract — which is what driving a real application usually costs.
      *
-     * It is also the workflow that found the `intent://` gap. Maps reads the `wv` token in an
-     * Android WebView's user agent and redirects the main frame to
+     * It is also the workflow that found two platform gaps, and it is worth recording what each one
+     * turned out to be, because the first answer was wrong.
+     *
+     * The first is the `intent://` handoff. Maps used to read the `wv` token in an Android
+     * WebView's user agent and redirect the main frame to
      * `intent://…;package=com.google.android.apps.maps;end`, whether or not the app is installed. A
-     * WebView cannot render that, so before `PageLoadWebViewClient.shouldOverrideUrlLoading`
-     * existed the navigation died at step one with `ERR_UNKNOWN_URL_SCHEME` and took the page with
-     * it. Refusing the handoff leaves the web page in place, which is what the rest of this reads.
+     * WebView cannot render that, so before `shouldOverrideUrlLoading` existed the navigation died
+     * at step one with `ERR_UNKNOWN_URL_SCHEME` and took the page with it. That refusal is still
+     * there — and iOS has its counterpart now — but it no longer fires here, because
+     * `applyVitreWebSettings` strips the `wv` token before the first load. Maps therefore serves
+     * this WebView the same page it serves a browser: no `intent://` redirect, and no modal over
+     * the controls. **That is why this workflow no longer dismisses an app prompt.** It used to
+     * wait 25s for a `dismiss_action` button, and on iOS — which never had a `wv` token to strip —
+     * that wait could not ever have been satisfied, so the workflow failed at step two on every iOS
+     * run. One page for both platforms is the whole point of stripping the token.
+     *
+     * The second gap was invisible in a way worth remembering: every page in a hosted WebView laid
+     * out with a viewport height of **zero**. `100vh` computed to `0` while `100vw`, `100%` and
+     * `clientHeight` were all correct, so Maps' `#app` container collapsed and the WebView painted
+     * blank — while the DOM stayed complete, so this workflow went on extracting eight correct rows
+     * out of a page that showed nothing. A run that reports success over a blank screen is the
+     * worst shape a bug can take. The cause was the WebView's `LayoutParams`, not any WebSettings
+     * flag; see `VitreWebView.android.kt`.
      *
      * `hl=en` in the URL is load-bearing, not cosmetic. The row locator matches an `aria-label`
      * containing the word "stars", and Maps writes that label in the device's language: the phone
@@ -235,29 +251,6 @@ object SampleWorkflows {
     val GoogleMapsPlaces =
         workflow(id = "google-maps-places", name = "Google Maps places nearby") {
             navigate("https://www.google.com/maps/search/coffee+near+Seoul+Station/?hl=en")
-            // Maps reads the `wv` token an Android WebView puts in its user agent and offers to
-            // hand the query to the installed app. The offer is a modal: it covers the controls
-            // below it, so nothing else on this page can be clicked until it is gone.
-            //
-            // Matched on `jsaction` rather than on a class. Every class on this page is minified
-            // and reminted whenever Google deploys, but `jsaction` carries the handler's name —
-            // `dismiss_action` — and names what the button *does*, which is the nearest thing to a
-            // contract the page offers. It is also language-independent, unlike matching the
-            // button's "Stay on web" text.
-            val dismissAppPrompt = xpath("//button[contains(@jsaction,'dismiss_action')]")
-            waitFor(dismissAppPrompt, timeoutMs = 25_000)
-            click(dismissAppPrompt)
-            // Mobile Maps shows results as pins first and as a list second, and "second" is literal:
-            // before this click not one result row exists in the document. That is why the wait for
-            // rows is below rather than straight after the navigation — waiting there finds nothing
-            // and blames the search for a view that was never opened.
-            //
-            // The button's own class is minified and its `jsaction` is a generated pane id, so the
-            // one durable thing about it is the label it wraps. `.//*` rather than `.//span`
-            // because which element holds the text is exactly the sort of detail a redesign moves.
-            val viewList = xpath("//button[.//*[normalize-space(text())='View list']]")
-            waitFor(viewList, timeoutMs = 15_000)
-            click(viewList)
             // A result row has no id, no `data-` attribute and no role — its container is a
             // minified class and nothing else. The one node in the row under a stable contract is
             // the rating, which is a `role="img"` with the score spelled out in its `aria-label`
@@ -277,6 +270,85 @@ object SampleWorkflows {
                     "//span[@role='img'][contains(@aria-label,'stars')]" +
                         "/ancestor::div[.//div[contains(@class,'fontHeadlineSmall')]][1]",
                 )
+            // Two controls stand between the search and the rows, and *which* of them appears
+            // depends on the platform — which is why neither is a `waitFor`. A wait that is not
+            // satisfied fails the run, so waiting for a control the other platform never renders is
+            // how this workflow broke on iOS in the first place. These two steps ask instead: act
+            // if the control is there, say so if it is not, and never fail for its absence.
+            //
+            // The promo comes first. On iOS, Maps opens a modal — "Upgrade to a smarter Google
+            // Maps" — over a dimmed page, and it blocks every control under it. Android does not
+            // get it: stripping the `wv` token also stopped Maps insisting, and all that is left
+            // there is a non-blocking "Open app" banner across the top, which is ignored.
+            //
+            // Matched on the button's text, which `hl=en` makes safe for the same reason it makes
+            // the "stars" label safe, and normalised to lower case so a redesign that recapitalises
+            // the label does not silently stop dismissing it. "Stay on web" is accepted alongside
+            // "Go back to web" because that is the wording the same modal used on Android before
+            // the token was stripped, and it costs one clause to keep working if Maps swaps them
+            // back.
+            // Mobile Maps shows results as pins first and as a list second, and "second" is literal:
+            // before this click not one result row exists in the document. That is why the wait for
+            // rows is below rather than straight after the navigation — waiting there finds nothing
+            // and blames the search for a view that was never opened.
+            //
+            // The button's own class is minified and its `jsaction` is a generated pane id, so the
+            // one durable thing about it is the label it wraps. `.//*` rather than `.//span`
+            // because which element holds the text is exactly the sort of detail a redesign moves.
+            evaluateJs(
+                script =
+                    """
+                    (async () => {
+                      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+                      const labels = ['go back to web', 'stay on web'];
+                      const find = () => [...document.querySelectorAll('button')].find((b) =>
+                        labels.includes((b.innerText || '').trim().toLowerCase()));
+                      for (let i = 0; i < 16; i++) {
+                        const button = find();
+                        if (button) { button.click(); return 'dismissed'; }
+                        await sleep(500);
+                      }
+                      return 'no app prompt';
+                    })()
+                    """.trimIndent(),
+                into = "appPrompt",
+            )
+            // Then the list. Mobile Maps shows results as pins first and as a list second, and
+            // "second" is literal: on Android not one result row exists in the document until this
+            // button is pressed. iOS is served the list already open and renders no such button, so
+            // this checks for rows before looking for it and returns straight away when they are
+            // already there.
+            //
+            // The button's own class is minified and its `jsaction` is a generated pane id, so the
+            // durable things about it are the label it wraps and the `aria-label` beside it; both
+            // are accepted, since which one carries the text is exactly the sort of detail a
+            // redesign moves.
+            //
+            // Both loops are bounded well inside the 15s a script has to settle in — 8s for the
+            // prompt, 9s here — because a poll that outlives its own budget reports as a script
+            // timeout rather than as "the control never appeared", which is the more misleading of
+            // the two failures.
+            evaluateJs(
+                script =
+                    """
+                    (async () => {
+                      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+                      const rows = () => document.evaluate(
+                        "count(${row.expression})", document, null, 1, null).numberValue;
+                      const find = () => [...document.querySelectorAll('button')].find((b) =>
+                        (b.getAttribute('aria-label') || '').trim() === 'View list' ||
+                        (b.innerText || '').trim() === 'View list');
+                      for (let i = 0; i < 18; i++) {
+                        if (rows() > 0) return 'already listed';
+                        const button = find();
+                        if (button) { button.click(); return 'opened the list'; }
+                        await sleep(500);
+                      }
+                      return 'neither rows nor a list button';
+                    })()
+                    """.trimIndent(),
+                into = "listView",
+            )
             waitFor(row, timeoutMs = 20_000)
             // Maps renders the list a screen at a time. On a phone-sized viewport the pane holds
             // one row when it first appears and each scroll to the bottom loads roughly one more,
@@ -288,10 +360,17 @@ object SampleWorkflows {
             // spread across a dozen alternating scroll and wait steps. It gives up early when a
             // pass stops adding rows, which is what keeps it inside the 15s a script has to settle.
             //
-            // It scrolls every scrollable container rather than the one holding the list, for the
-            // same reason the row locator walks up from the rating: that container's class is
-            // minified like all the others, while "has more content than it can show" is a property
-            // no redesign can rename.
+            // It finds the container to scroll the same way the row locator finds a row: by walking
+            // *up* from something stable. The list's own scroller has a minified class like
+            // everything else here, but "nearest ancestor of a result row that has more content
+            // than it can show" names it without depending on that.
+            //
+            // It used to scroll every scrollable container on the page instead, which was simpler
+            // and wrong in a way nothing caught while the viewport bug was live: `#app` is itself
+            // scrollable, so scrolling everything scrolled the entire application shell to its
+            // bottom and left the finished run showing an empty strip of page. With the layout
+            // collapsed to zero height nothing was scrollable, so the damage only appeared once the
+            // rendering was fixed.
             //
             // The count it returns is the honest one — how many rows the pane ended up holding, as
             // against the ten `limit` would have taken.
@@ -300,14 +379,23 @@ object SampleWorkflows {
                     """
                     (async () => {
                       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-                      const count = () => document.evaluate(
-                        "count(${row.expression})", document, null, 1, null).numberValue;
+                      const rows = () => document.evaluate(
+                        "${row.expression}", document, null, 7, null);
+                      const count = () => rows().snapshotLength;
+                      const scrollable = (el) => el.scrollHeight > el.clientHeight + 40;
+                      // The list's scroller, reached by walking up from a row rather than named.
+                      const paneOf = (el) => {
+                        for (let p = el && el.parentElement; p; p = p.parentElement) {
+                          if (scrollable(p)) return p;
+                        }
+                        return null;
+                      };
                       let seen = count();
                       let dry = 0;
                       for (let pass = 0; pass < 8 && seen < 8; pass++) {
-                        document.querySelectorAll('*').forEach((el) => {
-                          if (el.scrollHeight > el.clientHeight + 40) el.scrollTop = el.scrollHeight;
-                        });
+                        const pane = paneOf(rows().snapshotItem(0));
+                        if (!pane) break;
+                        pane.scrollTop = pane.scrollHeight;
                         await sleep(1100);
                         const now = count();
                         dry = now === seen ? dry + 1 : 0;
@@ -392,14 +480,14 @@ object SampleWorkflows {
 
     val all: List<Workflow> =
         listOf(
+            AmazonSearchResults,
+            GoogleMapsPlaces,
+            HackerNewsTopStory,
             AgentsEyeView,
             BridgeRoundTrip,
             FormEcho,
             FixtureSearchResults,
-            AmazonSearchResults,
-            GoogleMapsPlaces,
             ExampleDotComTitle,
-            HackerNewsTopStory,
         )
 }
 

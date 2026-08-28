@@ -3,6 +3,7 @@ package dev.ggoggam.vitre.sample.ui
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +18,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -145,7 +149,13 @@ fun StepRow(
     }
 }
 
-/** `key = value` row for an extracted workflow variable. */
+/**
+ * `key = value` row for an extracted workflow variable.
+ *
+ * Extracted values are routinely longer than the few lines a row can spare, so the collapsed row
+ * caps at [maxLines] and tapping it swaps in the whole value. The tap target and the hint only
+ * appear once the text has actually been clipped — a value that already fits has nothing to reveal.
+ */
 @Composable
 fun VariableRow(
     name: String,
@@ -153,6 +163,8 @@ fun VariableRow(
     modifier: Modifier = Modifier,
     maxLines: Int = 4,
 ) {
+    var expanded by remember(value) { mutableStateOf(false) }
+    var clipped by remember(value) { mutableStateOf(false) }
     Column(
         modifier =
             modifier
@@ -161,7 +173,8 @@ fun VariableRow(
                     width = 1.dp,
                     color = MaterialTheme.colorScheme.outlineVariant,
                     shape = RoundedCornerShape(10.dp),
-                ).padding(horizontal = 12.dp, vertical = 8.dp),
+                ).let { if (clipped) it.clickable { expanded = !expanded } else it }
+                .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
         Text(
             text = name,
@@ -174,8 +187,19 @@ fun VariableRow(
             style = MaterialTheme.typography.bodyMedium,
             fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.onSurface,
-            maxLines = maxLines,
+            maxLines = if (expanded) Int.MAX_VALUE else maxLines,
             overflow = TextOverflow.Ellipsis,
+            // Latches: once the collapsed measure reports overflow the row stays tappable, so
+            // expanding (which by definition no longer overflows) cannot strand it open.
+            onTextLayout = { layout -> if (layout.hasVisualOverflow) clipped = true },
         )
+        if (clipped) {
+            Text(
+                text = if (expanded) "Show less" else "Show more",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
     }
 }
