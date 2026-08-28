@@ -82,6 +82,87 @@ interface WebViewController {
     suspend fun evaluateJs(script: String): String
 
     /**
+     * Captures what the page **currently looks like** and returns it encoded, PNG by default.
+     *
+     * This is the second channel to a caller that has never seen the page, and it answers what the
+     * first cannot. [dev.ggoggam.vitre.core.workflow.PageSnapshot] is a text outline of the DOM, so
+     * a canvas, a chart, a map tile, an image-only advert and — most of all — *layout* are simply
+     * absent from it. A run against a page that rendered wrongly and a run against a page that
+     * rendered correctly produce the same outline.
+     *
+     * ### The visible viewport, on every platform
+     *
+     * What comes back is the WebView's current viewport at its current scroll position — the pixels
+     * a user looking at that WebView would see, and nothing below the fold. Scroll first if you want
+     * something else; the page's own `scrollTo` through [evaluateJs] is the way, and it is what a
+     * caller would have to do to *click* the thing anyway.
+     *
+     * Full-page capture is deliberately **not offered**, and the reason is the repo's usual one
+     * rather than effort. Only one of the three platforms can actually do it:
+     *
+     *  - **Desktop** could. Chrome DevTools' `Page.captureScreenshot` takes `captureBeyondViewport`
+     *    and genuinely renders the whole scroll height.
+     *  - **Android** cannot, honestly. The `measure`/`layout`-to-content-height trick reflows the
+     *    live view a user is looking at, and modern WebView only rasterises tiles near the viewport,
+     *    so the part that was never on screen comes back blank. `capturePicture` is deprecated and
+     *    has been viewport-only for a decade.
+     *  - **iOS** cannot either. `WKSnapshotConfiguration.rect` is clamped to the view's bounds;
+     *    the workaround is to resize the `WKWebView` to the content height and put it back, which
+     *    fires media queries, re-triggers lazy loading and moves sticky headers — the picture is of
+     *    a page in a state that never existed.
+     *
+     * A parameter that means "the whole page" on one platform and "the top of it" on the other two
+     * is the exact shape of the bugs in `docs/CONCURRENCY.md`'s table, so it does not exist. If a
+     * full-page capture is ever wanted, it should arrive as a separate, explicitly desktop-only
+     * call rather than as a flag on this one.
+     *
+     * The one place "the viewport" is not the same claim on all three: on Android and iOS the
+     * WebView has a size because it is in a view hierarchy, and on the desktop the browser renders
+     * offscreen and its viewport is whatever the host last reported through `CefSurface.resize`. A
+     * headless lane nobody has sized is 1×1, and its screenshot is one pixel. Size the surface
+     * before capturing there.
+     *
+     * ### Cost
+     *
+     * Bounded by [ScreenshotOptions.maxWidth] / [ScreenshotOptions.maxHeight], which default to a
+     * size a vision model will not downscale further. The bound is applied *during* capture on all
+     * three platforms — the bitmap is never allocated at full size and then resampled — because on
+     * a phone that allocation is the expensive half.
+     *
+     * ### Ordering
+     *
+     * Ordered against [navigate] and [evaluateJs] like every other operation: a picture taken
+     * halfway through someone else's navigation is a picture of neither document. The encode
+     * afterwards is not an operation on the WebView and deliberately runs outside both the lock and
+     * the WebView thread, so a PNG compress does not become UI jank.
+     *
+     * ### Why a method here rather than a capability object
+     *
+     * The other cross-platform capability on this interface, the `cookies` jar, is shaped
+     * differently — a nullable property handing back a `CookieStore` of its own. That is the same
+     * convention rather than a competing one, and what decides between the two shapes is what the
+     * capability *is*. A cookie jar is a separate resource: it is not ordered against the WebView,
+     * it is shared between lanes, and it outlives [close]. A screenshot is none of those. It is an
+     * operation on this document, it takes the same lock [navigate] and [evaluateJs] take, and it
+     * dies with the controller — so it belongs beside them rather than behind a handle with a
+     * lifetime of its own.
+     *
+     * ### Default implementation
+     *
+     * Throws [ScreenshotUnsupportedException]. It exists for the same reason `cookies` defaults to
+     * null: adding a member must not break a `WebViewController` written outside this module — the
+     * audience [dev.ggoggam.vitre.core.concurrent.WebViewOrdering] is public for. It throws rather
+     * than returning a blank image because a silent no-op is how a caller ends up reasoning about a
+     * page from a picture of nothing. All three controllers this module ships override it.
+     *
+     * @throws ScreenshotFailedException if the platform declined, returned nothing, or the WebView
+     *   has no size because it has not been laid out yet.
+     * @throws ScreenshotUnsupportedException if this controller has no pixel path at all.
+     */
+    suspend fun screenshot(options: ScreenshotOptions = ScreenshotOptions()): PageScreenshot =
+        throw ScreenshotUnsupportedException("${this::class.simpleName} does not implement screenshot()")
+
+    /**
      * Runs [block] with this WebView to itself — no other caller's operation can land part-way
      * through the sequence it performs.
      *
@@ -144,5 +225,29 @@ class ScriptTimeoutException(
  * because the alternative is a step that quietly stores `null` and carries on.
  */
 class ScriptFailedException(
+    message: String,
+) : RuntimeException(message)
+
+/**
+ * A screenshot was attempted against a WebView that could have answered, and did not.
+ *
+ * The WebView had no size because nothing has laid it out, the platform's snapshot call reported an
+ * error, or the encoder refused the bitmap. Distinct from [ScreenshotUnsupportedException], which
+ * means the capability was never there to begin with — this one is a page or a view in a state
+ * where the picture cannot be taken *right now*, and retrying after a layout pass may well work.
+ */
+class ScreenshotFailedException(
+    message: String,
+) : RuntimeException(message)
+
+/**
+ * This controller cannot take screenshots at all.
+ *
+ * Only reachable through [WebViewController.screenshot]'s default implementation, i.e. from a
+ * controller written outside this module that has not overridden it. Thrown rather than answered
+ * with a blank image on purpose: a caller reasoning about a page from a picture of nothing is a
+ * worse failure than one that stops.
+ */
+class ScreenshotUnsupportedException(
     message: String,
 ) : RuntimeException(message)

@@ -4,23 +4,43 @@ import dev.ggoggam.vitre.core.bridge.BridgeReady
 import dev.ggoggam.vitre.core.bridge.DefaultWebViewBridge
 import dev.ggoggam.vitre.core.bridge.WebViewBridge
 import dev.ggoggam.vitre.core.bridge.WebViewInbox
+import dev.ggoggam.vitre.core.concurrent.WebViewDispatcher
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.ObjCSignatureOverride
+import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.useContents
+import kotlinx.cinterop.usePinned
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import platform.Foundation.NSData
 import platform.Foundation.NSError
+import platform.Foundation.NSNumber
 import platform.Foundation.NSURL
 import platform.Foundation.NSURLRequest
+import platform.UIKit.UIImage
+import platform.UIKit.UIImageJPEGRepresentation
+import platform.UIKit.UIImagePNGRepresentation
+import platform.UIKit.UIScreen
 import platform.WebKit.WKFrameInfo
 import platform.WebKit.WKNavigation
+import platform.WebKit.WKNavigationAction
+import platform.WebKit.WKNavigationActionPolicy
 import platform.WebKit.WKNavigationDelegateProtocol
 import platform.WebKit.WKScriptMessage
 import platform.WebKit.WKScriptMessageHandlerProtocol
+import platform.WebKit.WKSnapshotConfiguration
 import platform.WebKit.WKUserContentController
 import platform.WebKit.WKUserScript
 import platform.WebKit.WKUserScriptInjectionTime
 import platform.WebKit.WKWebView
 import platform.darwin.NSObject
+import platform.posix.memcpy
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.math.roundToInt
 
 private const val BRIDGE_NAME = "vitre"
 
@@ -63,6 +83,23 @@ private val BRIDGE_INSTALL_JS =
  * with statements to run wraps them in an IIFE, which is the convention the samples already follow.
  */
 private fun asJsonExpression(script: String): String = "JSON.stringify((function(){return ($script);})() ?? null)"
+
+/**
+ * Copies an [NSData]'s bytes into a Kotlin [ByteArray].
+ *
+ * One `memcpy` rather than a per-byte read: an encoded screenshot is hundreds of kilobytes, and
+ * crossing the interop boundary once per byte is the difference between microseconds and tens of
+ * milliseconds. The copy itself is not avoidable — the caller gets a `ByteArray` it owns, and the
+ * `NSData` is WebKit's to release.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun NSData.toByteArray(): ByteArray {
+    val size = length.toInt()
+    if (size == 0) return ByteArray(0)
+    val out = ByteArray(size)
+    out.usePinned { pinned -> memcpy(pinned.addressOf(0), bytes, length) }
+    return out
+}
 
 /**
  * Wraps a [WKWebView]. Construct with a freshly configured WKWebView (the controller installs a
@@ -164,6 +201,105 @@ class IosWebViewController(
         }
     }
 
+    /**
+     * `takeSnapshotWithConfiguration:` — WebKit's own, and the only one worth using here.
+     *
+     * The alternatives are worse in ways that matter. Rendering the view's layer into a
+     * `UIGraphicsImageRenderer` context misses everything WebKit composites out of process, which
+     * on a modern WKWebView is most of the page. Asking the page to paint itself into a canvas
+     * cannot reach cross-origin images. This call goes to the web process and comes back with what
+     * was actually on screen.
+     *
+     * **`snapshotWidth` is in points; the image comes back at the screen's scale.** So the pixel
+     * size a caller bounded has to be divided by that scale on the way in, or a 3× phone hands back
+     * an image three times the size that was asked for. The size is reported back out of the
+     * returned `UIImage` rather than from the request, so [PageScreenshot.width] is what the bytes
+     * actually contain.
+     *
+     * `rect` is left unset (`CGRectNull`), which means the visible viewport — see
+     * [WebViewController.screenshot] for why the full page is not offered here.
+     *
+     * **The encode runs off the main thread and outside the ordering lock**, because PNG-encoding a
+     * megapixel is pure CPU that no longer touches the WebView, and `WKWebView` is UIKit — the one
+     * thread it can be touched from is the one thread the UI needs.
+     *
+     * `afterScreenUpdates` is true so the picture includes whatever the step just before it did.
+     * The known caveat is that WebKit does not answer this reliably for a view that is not in a
+     * window, so the wait is bounded by `scriptTimeoutMs` and reported as a
+     * [ScreenshotFailedException] rather than left to hang.
+     */
+    override suspend fun screenshot(options: ScreenshotOptions): PageScreenshot {
+        checkOpen()
+        val image =
+            serializer.exclusively {
+                withContext(WebViewDispatcher) { takeSnapshot(options) }
+            }
+        return withContext(Dispatchers.Default) { image.encode(options) }
+    }
+
+    /** Runs on the main thread, under the ordering lock. */
+    private suspend fun takeSnapshot(options: ScreenshotOptions): UIImage {
+        val screenScale = webView.window?.screen?.scale ?: UIScreen.mainScreen.scale
+        val (pointWidth, pointHeight) = webView.bounds.useContents { size.width to size.height }
+        val sourceWidth = (pointWidth * screenScale).roundToInt()
+        val sourceHeight = (pointHeight * screenScale).roundToInt()
+        if (sourceWidth <= 0 || sourceHeight <= 0) {
+            throw ScreenshotFailedException(
+                "The WKWebView is ${pointWidth}x$pointHeight points — it has no bounds to snapshot yet",
+            )
+        }
+        val target = options.fit(sourceWidth, sourceHeight)
+        val configuration =
+            WKSnapshotConfiguration().apply {
+                afterScreenUpdates = true
+                snapshotWidth = NSNumber(double = target.width / screenScale)
+            }
+        return try {
+            withTimeout(scriptTimeoutMs) {
+                suspendCancellableCoroutine { cont ->
+                    webView.takeSnapshotWithConfiguration(configuration) { image: UIImage?, error: NSError? ->
+                        when {
+                            error != null -> {
+                                cont.resumeWithException(ScreenshotFailedException(error.localizedDescription))
+                            }
+
+                            image == null -> {
+                                cont.resumeWithException(ScreenshotFailedException("WebKit returned no image and no error"))
+                            }
+
+                            else -> {
+                                cont.resume(image)
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (_: TimeoutCancellationException) {
+            // A cancellation escaping here would be indistinguishable, one frame up, from the
+            // caller having been cancelled — the same reasoning as ScriptTimeoutException.
+            throw ScreenshotFailedException("WebKit did not return a snapshot within ${scriptTimeoutMs}ms")
+        }
+    }
+
+    /** Runs anywhere. `UIImage` is safe to read off the main thread, and encoding is all this does. */
+    private fun UIImage.encode(options: ScreenshotOptions): PageScreenshot {
+        val data =
+            when (options.format) {
+                ScreenshotFormat.Png -> UIImagePNGRepresentation(this)
+
+                // UIKit takes 0..1 where the rest of this API takes 1..100, so it is the one place
+                // the quality number is translated rather than passed through.
+                ScreenshotFormat.Jpeg -> UIImageJPEGRepresentation(this, options.quality / 100.0)
+            } ?: throw ScreenshotFailedException("UIKit could not encode the snapshot as ${options.format}")
+        val (pointWidth, pointHeight) = size.useContents { width to height }
+        return PageScreenshot(
+            bytes = data.toByteArray(),
+            format = options.format,
+            width = (pointWidth * scale).roundToInt(),
+            height = (pointHeight * scale).roundToInt(),
+        )
+    }
+
     override suspend fun <T> exclusively(block: suspend (ExclusiveAccess) -> T): T {
         checkOpen()
         return serializer.exclusively(block)
@@ -200,6 +336,43 @@ class IosWebViewController(
         private val scriptResults: ScriptResults,
     ) : NSObject(),
         WKNavigationDelegateProtocol {
+        /**
+         * Set when [decidePolicyForNavigationAction] has just refused a scheme, and read once by
+         * [didFailProvisionalNavigation] below.
+         *
+         * Cancelling a *redirect* — which is the case that matters, since a handoff is something
+         * the page decides after it has already begun loading — reaches WebKit as a failed
+         * provisional navigation, and reporting that to the serializer would fail the very
+         * navigation this refusal exists to protect. Android has no equivalent flag because
+         * `shouldOverrideUrlLoading` returning true produces no error callback at all; this is the
+         * cost of expressing the same policy through WebKit's API.
+         */
+        private var refusedScheme = false
+
+        /**
+         * Refuses page-initiated navigations to schemes this WebView cannot render a document from
+         * — the counterpart to Android's `shouldOverrideUrlLoading`, and for the same reasons. See
+         * [RENDERABLE_SCHEMES].
+         *
+         * iOS reaches this by a different route than Android does. `WKWebView` has no `wv` token in
+         * its user agent for a site to key on, so the app-handoff redirect fires far less often
+         * here — but `comgooglemaps://`, `itms-apps://` and every vendor scheme still exist, and
+         * without this a page that tries one takes the workflow down with it.
+         */
+        @ObjCSignatureOverride
+        override fun webView(
+            webView: WKWebView,
+            decidePolicyForNavigationAction: WKNavigationAction,
+            decisionHandler: (WKNavigationActionPolicy) -> Unit,
+        ) {
+            if (isRenderableScheme(decidePolicyForNavigationAction.request.URL?.scheme)) {
+                decisionHandler(WKNavigationActionPolicy.WKNavigationActionPolicyAllow)
+            } else {
+                refusedScheme = true
+                decisionHandler(WKNavigationActionPolicy.WKNavigationActionPolicyCancel)
+            }
+        }
+
         @ObjCSignatureOverride
         override fun webView(
             webView: WKWebView,
@@ -219,13 +392,27 @@ class IosWebViewController(
             didFinishNavigation: WKNavigation?,
         ) = serializer.finished()
 
-        /** The document never began loading — bad host, no network, cancelled redirect. */
+        /**
+         * The document never began loading — bad host, no network, cancelled redirect.
+         *
+         * A cancellation this delegate caused is swallowed: refusing an `intent://`-style handoff
+         * leaves the previous document in place and on screen, which is a success for the workflow
+         * driving it, not a page-load failure. Only the flag set by
+         * [decidePolicyForNavigationAction] is trusted for that — matching on the error code would
+         * also swallow a genuine cancellation the host asked for.
+         */
         @ObjCSignatureOverride
         override fun webView(
             webView: WKWebView,
             didFailProvisionalNavigation: WKNavigation?,
             withError: NSError,
-        ) = serializer.failed(withError.localizedDescription)
+        ) {
+            if (refusedScheme) {
+                refusedScheme = false
+                return
+            }
+            serializer.failed(withError.localizedDescription)
+        }
 
         /** The document committed but then failed part-way through. */
         @ObjCSignatureOverride

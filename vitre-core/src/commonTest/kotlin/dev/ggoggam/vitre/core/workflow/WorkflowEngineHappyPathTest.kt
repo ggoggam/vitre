@@ -31,10 +31,10 @@ class WorkflowEngineHappyPathTest {
                 controller.navigations,
             )
             assertEquals(5, events.size)
-            assertIs<WorkflowEvent.StepStarted>(events[0]).also { assertEquals(0, it.index) }
-            assertIs<WorkflowEvent.StepCompleted>(events[1]).also { assertEquals(0, it.index) }
-            assertIs<WorkflowEvent.StepStarted>(events[2]).also { assertEquals(1, it.index) }
-            assertIs<WorkflowEvent.StepCompleted>(events[3]).also { assertEquals(1, it.index) }
+            assertIs<WorkflowEvent.StepStarted>(events[0]).also { assertEquals(StepPath.root(0), it.path) }
+            assertIs<WorkflowEvent.StepCompleted>(events[1]).also { assertEquals(StepPath.root(0), it.path) }
+            assertIs<WorkflowEvent.StepStarted>(events[2]).also { assertEquals(StepPath.root(1), it.path) }
+            assertIs<WorkflowEvent.StepCompleted>(events[3]).also { assertEquals(StepPath.root(1), it.path) }
             val completed = assertIs<WorkflowEvent.Completed>(events[4])
             assertEquals(emptyMap(), completed.variables)
         }

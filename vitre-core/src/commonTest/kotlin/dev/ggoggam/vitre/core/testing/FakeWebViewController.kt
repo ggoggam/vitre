@@ -5,6 +5,8 @@ import dev.ggoggam.vitre.core.bridge.WebViewBridge
 import dev.ggoggam.vitre.core.bridge.WebViewInbox
 import dev.ggoggam.vitre.core.concurrent.WebViewOrdering
 import dev.ggoggam.vitre.core.webview.ExclusiveAccess
+import dev.ggoggam.vitre.core.webview.PageScreenshot
+import dev.ggoggam.vitre.core.webview.ScreenshotOptions
 import dev.ggoggam.vitre.core.webview.WebViewController
 
 /**
@@ -88,6 +90,40 @@ class FakeWebViewController : WebViewController {
         }
     }
 
+    /** The options each [screenshot] call asked for, in order. */
+    val screenshotRequests = mutableListOf<ScreenshotOptions>()
+
+    /**
+     * Called with the options [screenshot] was asked for.
+     *
+     * The default answers with the eight-byte PNG signature, sized by running the *production*
+     * [ScreenshotOptions.fit] over a notional 800×600 viewport — real enough for a caller that
+     * sniffs the format or reasons about the size, and small enough that no test carries a bitmap
+     * around. Sharing the real fitting rule is the point: a fake that made its own size up would be
+     * laxer than production in exactly the way `docs/PLAN.md` says the last two bugs hid.
+     */
+    var nextScreenshot: (ScreenshotOptions) -> PageScreenshot = { options ->
+        val size = options.fit(FAKE_VIEWPORT_WIDTH, FAKE_VIEWPORT_HEIGHT)
+        PageScreenshot(PNG_SIGNATURE, options.format, size.width, size.height)
+    }
+
+    /**
+     * Records the request and hands back [nextScreenshot].
+     *
+     * Ordered through the same [WebViewOrdering] as everything else, because that is the property a
+     * test would want to assert: a screenshot is an operation on the page, and one taken between a
+     * `WaitFor` and its `Extract` is exactly the interleaving `exclusively` exists to prevent. A
+     * fake that skipped the lock here would be laxer than production in a new place — see the note
+     * on [order].
+     */
+    override suspend fun screenshot(options: ScreenshotOptions): PageScreenshot {
+        checkOpen()
+        return order.ordered {
+            screenshotRequests += options
+            nextScreenshot(options)
+        }
+    }
+
     override suspend fun <T> exclusively(block: suspend (ExclusiveAccess) -> T): T = order.exclusively(block)
 
     /** Mirrors production: closing is idempotent and takes the controller out of service. */
@@ -108,4 +144,12 @@ class FakeWebViewController : WebViewController {
 
     /** Stands in for the new-document reset a real controller performs on page start. */
     fun simulatePageStart() = inbox.clear()
+
+    private companion object {
+        const val FAKE_VIEWPORT_WIDTH = 800
+        const val FAKE_VIEWPORT_HEIGHT = 600
+
+        /** The PNG magic number. Enough for a caller that checks what it was handed. */
+        val PNG_SIGNATURE = byteArrayOf(-119, 80, 78, 71, 13, 10, 26, 10)
+    }
 }

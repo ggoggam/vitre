@@ -45,7 +45,7 @@ class NavigateStepTest {
             assertEquals(listOf("https://example.com"), controller.navigations)
             assertEquals(emptyList(), controller.evaluatedScripts)
             assertEquals(1, events.size)
-            assertIs<WorkflowEvent.StepStarted>(events[0]).also { assertEquals(0, it.index) }
+            assertIs<WorkflowEvent.StepStarted>(events[0]).also { assertEquals(StepPath.root(0), it.path) }
 
             pageLoaded.complete(Unit)
             run.join()
@@ -76,7 +76,7 @@ class NavigateStepTest {
             val events = WorkflowEngine(controller, EmptyCoroutineContext).run(workflow).toList()
 
             val failed = assertIs<WorkflowEvent.Failed>(events.last())
-            assertEquals(0, failed.stepIndex)
+            assertEquals(StepPath.root(0), failed.path)
             assertEquals("net::ERR_NAME_NOT_RESOLVED", failed.message)
             assertTrue(controller.evaluatedScripts.isEmpty(), "workflow continued past a dead page")
         }

@@ -2,7 +2,9 @@ package dev.ggoggam.vitre.sample.data
 
 import dev.ggoggam.vitre.core.workflow.Workflow
 import dev.ggoggam.vitre.core.workflow.WorkflowStep.Extract.Source
+import dev.ggoggam.vitre.core.workflow.exists
 import dev.ggoggam.vitre.core.workflow.handle
+import dev.ggoggam.vitre.core.workflow.variableMatches
 import dev.ggoggam.vitre.core.workflow.workflow
 import dev.ggoggam.vitre.core.workflow.xpath
 import kotlinx.serialization.Serializable
@@ -135,6 +137,40 @@ object SampleWorkflows {
         }
 
     /**
+     * Two branches the page decides, not the builder — the demo for `runIf`.
+     *
+     * The first is the shape that motivates the step at all: an element that is only *sometimes*
+     * there. This fixture never shows a consent banner, so the else branch runs, and that is a
+     * completed run rather than a failure — which is the whole difference from putting a `WaitFor`
+     * on something optional.
+     *
+     * The second branches on a value the run itself produced. Nothing at build time can know what
+     * `#KB-1002`'s stock line says, so no amount of Kotlin `if` around these lines could express
+     * it: the fixture lists that row as out of stock, so the workflow reads the substitute's price
+     * instead of the one it came for.
+     *
+     * Watch the step list while it runs — the branch that is not taken greys out rather than
+     * staying pending, and the steps inside a branch are numbered and indented under it.
+     */
+    val ConditionalSteps =
+        workflow(id = "conditional-steps", name = "Branching on the page (if / else)") {
+            loadHtml(html = RESULTS_HTML, baseUrl = FIXTURE_ORIGIN)
+            waitFor("#results", timeoutMs = 5_000)
+            runIf(exists("#cookie-banner"), otherwise = { evaluateJs("'none shown'", into = "consent") }) {
+                click("#cookie-banner .accept")
+                evaluateJs("'accepted'", into = "consent")
+            }
+            extract(xpath("//li[@data-sku='KB-1002']//span[contains(@class,'stock')]"), into = "stock")
+            runIf(
+                variableMatches("stock", "Out of stock"),
+                otherwise = { extract(xpath("//li[@data-sku='KB-1002']//span[@class='price']"), into = "price") },
+            ) {
+                extract(xpath("//li[@data-sku='KB-1003']//h3/@data-full-title"), into = "substitute")
+                extract(xpath("//li[@data-sku='KB-1003']//span[@class='price']"), into = "price")
+            }
+        }
+
+    /**
      * The real thing: search Amazon and list what comes back.
      *
      * Worth saying plainly — this is the workflow most likely to break, and not because of anything
@@ -208,6 +244,237 @@ object SampleWorkflows {
             )
         }
 
+    /**
+     * Google Maps: a page that is an application rather than a document.
+     *
+     * Every other live workflow here reads a server-rendered page, where the answer is in the HTML
+     * before any script runs and the only question is which selector names it. Maps is the other
+     * kind. It arrives as a map and the results do not exist in the DOM at all until a control is
+     * pressed, so two of the steps below are there purely to get the page into a state where there
+     * is anything to extract — which is what driving a real application usually costs.
+     *
+     * It is also the workflow that found two platform gaps, and it is worth recording what each one
+     * turned out to be, because the first answer was wrong.
+     *
+     * The first is the `intent://` handoff. Maps used to read the `wv` token in an Android
+     * WebView's user agent and redirect the main frame to
+     * `intent://…;package=com.google.android.apps.maps;end`, whether or not the app is installed. A
+     * WebView cannot render that, so before `shouldOverrideUrlLoading` existed the navigation died
+     * at step one with `ERR_UNKNOWN_URL_SCHEME` and took the page with it. That refusal is still
+     * there — and iOS has its counterpart now — but it no longer fires here, because
+     * `applyVitreWebSettings` strips the `wv` token before the first load. Maps therefore serves
+     * this WebView the same page it serves a browser: no `intent://` redirect, and no modal over
+     * the controls. **That is why this workflow no longer dismisses an app prompt.** It used to
+     * wait 25s for a `dismiss_action` button, and on iOS — which never had a `wv` token to strip —
+     * that wait could not ever have been satisfied, so the workflow failed at step two on every iOS
+     * run. One page for both platforms is the whole point of stripping the token.
+     *
+     * The second gap was invisible in a way worth remembering: every page in a hosted WebView laid
+     * out with a viewport height of **zero**. `100vh` computed to `0` while `100vw`, `100%` and
+     * `clientHeight` were all correct, so Maps' `#app` container collapsed and the WebView painted
+     * blank — while the DOM stayed complete, so this workflow went on extracting eight correct rows
+     * out of a page that showed nothing. A run that reports success over a blank screen is the
+     * worst shape a bug can take. The cause was the WebView's `LayoutParams`, not any WebSettings
+     * flag; see `VitreWebView.android.kt`.
+     *
+     * `hl=en` in the URL is load-bearing, not cosmetic. The row locator matches an `aria-label`
+     * containing the word "stars", and Maps writes that label in the device's language: the phone
+     * this was developed against is served Korean, where the same label reads "별표" and every
+     * locator below matches nothing. The Amazon workflow draws this lesson the other way round, by
+     * keying on class names *because* it cannot pin the language; here the language can be pinned,
+     * so it is.
+     */
+    val GoogleMapsPlaces =
+        workflow(id = "google-maps-places", name = "Google Maps places nearby") {
+            navigate("https://www.google.com/maps/search/coffee+near+Seoul+Station/?hl=en")
+            // A result row has no id, no `data-` attribute and no role — its container is a
+            // minified class and nothing else. The one node in the row under a stable contract is
+            // the rating, which is a `role="img"` with the score spelled out in its `aria-label`
+            // because a row of stars has to be readable aloud. So the row is found by anchoring on
+            // that and walking *up*, which is the thing CSS cannot do at all.
+            //
+            // Anchoring on the rating rather than on the name is deliberate. Going down from the
+            // name matches a sixth "row": the sponsored block wraps the entire results pane and
+            // carries a heading of its own ("Why this ad?"), so the nearest enclosing container
+            // holding both a heading and a rating is the whole pane. From the rating the same
+            // expression lands on the tight container instead, and the ad wrapper never matches.
+            //
+            // What it costs is honest and worth stating: a place Maps has no rating for is not a
+            // row here at all. Rows are defined by the anchor, and the anchor is the rating.
+            val row =
+                xpath(
+                    "//span[@role='img'][contains(@aria-label,'stars')]" +
+                        "/ancestor::div[.//div[contains(@class,'fontHeadlineSmall')]][1]",
+                )
+            // Two controls stand between the search and the rows, and *which* of them appears
+            // depends on the platform — which is why neither is a `waitFor`. A wait that is not
+            // satisfied fails the run, so waiting for a control the other platform never renders is
+            // how this workflow broke on iOS in the first place. These two steps ask instead: act
+            // if the control is there, say so if it is not, and never fail for its absence.
+            //
+            // The promo comes first. On iOS, Maps opens a modal — "Upgrade to a smarter Google
+            // Maps" — over a dimmed page, and it blocks every control under it. Android does not
+            // get it: stripping the `wv` token also stopped Maps insisting, and all that is left
+            // there is a non-blocking "Open app" banner across the top, which is ignored.
+            //
+            // Matched on the button's text, which `hl=en` makes safe for the same reason it makes
+            // the "stars" label safe, and normalised to lower case so a redesign that recapitalises
+            // the label does not silently stop dismissing it. "Stay on web" is accepted alongside
+            // "Go back to web" because that is the wording the same modal used on Android before
+            // the token was stripped, and it costs one clause to keep working if Maps swaps them
+            // back.
+            // Mobile Maps shows results as pins first and as a list second, and "second" is literal:
+            // before this click not one result row exists in the document. That is why the wait for
+            // rows is below rather than straight after the navigation — waiting there finds nothing
+            // and blames the search for a view that was never opened.
+            //
+            // The button's own class is minified and its `jsaction` is a generated pane id, so the
+            // one durable thing about it is the label it wraps. `.//*` rather than `.//span`
+            // because which element holds the text is exactly the sort of detail a redesign moves.
+            evaluateJs(
+                script =
+                    """
+                    (async () => {
+                      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+                      const labels = ['go back to web', 'stay on web'];
+                      const find = () => [...document.querySelectorAll('button')].find((b) =>
+                        labels.includes((b.innerText || '').trim().toLowerCase()));
+                      for (let i = 0; i < 16; i++) {
+                        const button = find();
+                        if (button) { button.click(); return 'dismissed'; }
+                        await sleep(500);
+                      }
+                      return 'no app prompt';
+                    })()
+                    """.trimIndent(),
+                into = "appPrompt",
+            )
+            // Then the list. Mobile Maps shows results as pins first and as a list second, and
+            // "second" is literal: on Android not one result row exists in the document until this
+            // button is pressed. iOS is served the list already open and renders no such button, so
+            // this checks for rows before looking for it and returns straight away when they are
+            // already there.
+            //
+            // The button's own class is minified and its `jsaction` is a generated pane id, so the
+            // durable things about it are the label it wraps and the `aria-label` beside it; both
+            // are accepted, since which one carries the text is exactly the sort of detail a
+            // redesign moves.
+            //
+            // Both loops are bounded well inside the 15s a script has to settle in — 8s for the
+            // prompt, 9s here — because a poll that outlives its own budget reports as a script
+            // timeout rather than as "the control never appeared", which is the more misleading of
+            // the two failures.
+            evaluateJs(
+                script =
+                    """
+                    (async () => {
+                      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+                      const rows = () => document.evaluate(
+                        "count(${row.expression})", document, null, 1, null).numberValue;
+                      const find = () => [...document.querySelectorAll('button')].find((b) =>
+                        (b.getAttribute('aria-label') || '').trim() === 'View list' ||
+                        (b.innerText || '').trim() === 'View list');
+                      for (let i = 0; i < 18; i++) {
+                        if (rows() > 0) return 'already listed';
+                        const button = find();
+                        if (button) { button.click(); return 'opened the list'; }
+                        await sleep(500);
+                      }
+                      return 'neither rows nor a list button';
+                    })()
+                    """.trimIndent(),
+                into = "listView",
+            )
+            waitFor(row, timeoutMs = 20_000)
+            // Maps renders the list a screen at a time. On a phone-sized viewport the pane holds
+            // one row when it first appears and each scroll to the bottom loads roughly one more,
+            // so extracting straight after the wait above returns a single place — which reads as
+            // Google refusing to answer when in fact nothing has asked for the rest yet.
+            //
+            // This is the one script here that has to *wait*, and it can: `evaluateJs` awaits a
+            // promise rather than returning it, so the loop lives in the page instead of being
+            // spread across a dozen alternating scroll and wait steps. It gives up early when a
+            // pass stops adding rows, which is what keeps it inside the 15s a script has to settle.
+            //
+            // It finds the container to scroll the same way the row locator finds a row: by walking
+            // *up* from something stable. The list's own scroller has a minified class like
+            // everything else here, but "nearest ancestor of a result row that has more content
+            // than it can show" names it without depending on that.
+            //
+            // It used to scroll every scrollable container on the page instead, which was simpler
+            // and wrong in a way nothing caught while the viewport bug was live: `#app` is itself
+            // scrollable, so scrolling everything scrolled the entire application shell to its
+            // bottom and left the finished run showing an empty strip of page. With the layout
+            // collapsed to zero height nothing was scrollable, so the damage only appeared once the
+            // rendering was fixed.
+            //
+            // The count it returns is the honest one — how many rows the pane ended up holding, as
+            // against the ten `limit` would have taken.
+            evaluateJs(
+                script =
+                    """
+                    (async () => {
+                      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+                      const rows = () => document.evaluate(
+                        "${row.expression}", document, null, 7, null);
+                      const count = () => rows().snapshotLength;
+                      const scrollable = (el) => el.scrollHeight > el.clientHeight + 40;
+                      // The list's scroller, reached by walking up from a row rather than named.
+                      const paneOf = (el) => {
+                        for (let p = el && el.parentElement; p; p = p.parentElement) {
+                          if (scrollable(p)) return p;
+                        }
+                        return null;
+                      };
+                      let seen = count();
+                      let dry = 0;
+                      for (let pass = 0; pass < 8 && seen < 8; pass++) {
+                        const pane = paneOf(rows().snapshotItem(0));
+                        if (!pane) break;
+                        pane.scrollTop = pane.scrollHeight;
+                        await sleep(1100);
+                        const now = count();
+                        dry = now === seen ? dry + 1 : 0;
+                        seen = now;
+                        if (dry >= 2) break;
+                      }
+                      return seen;
+                    })()
+                    """.trimIndent(),
+                into = "placeCount",
+            )
+            // The rating's own block, which the rest of the row hangs off. `fontHeadlineSmall` and
+            // `fontBodyMedium` below are the exception to the minification: they come from Google's
+            // shared typography sheet, are shared across their products, and say what a thing *is*
+            // rather than how this build happened to name it.
+            val ratingBlock = ".//span[@role='img'][contains(@aria-label,'stars')]/ancestor::div[2]"
+            extractRows(rows = row, into = "places", limit = 10) {
+                column("name", xpath(".//div[contains(@class,'fontHeadlineSmall')]"))
+                // The label reads "4.3 stars 105 Reviews" — score and review count in one string,
+                // and the only place the review count appears in a machine-readable form at all.
+                // The visible text next to it is "4.3(105)".
+                column(
+                    "rating",
+                    xpath(".//span[@role='img'][contains(@aria-label,'stars')]"),
+                    from = Source.Attribute("aria-label"),
+                )
+                // Category, address and opening hours are three spans in two divs that follow the
+                // rating block, none of which carries a usable hook of its own. `following-sibling`
+                // reaches them by position from the one node that does — the second axis query in
+                // this workflow with no CSS equivalent.
+                column("category", xpath("$ratingBlock/following-sibling::div[1]/div[1]/span[1]"))
+                // `last()`, not `[2]`: some rows carry an extra empty span between the category and
+                // the address, and indexing from the front reads the separator for one row in five.
+                column("address", xpath("$ratingBlock/following-sibling::div[1]/div[1]/span[last()]"))
+                // Positional, and so occasionally wrong in a way worth leaving visible: a place
+                // Google has an editorial blurb for puts that line here instead, and this column
+                // reads "Iconic coffeehouse chain" for the Starbucks row. There is no attribute
+                // distinguishing the two, so the choice is a wrong value in one row of eight or no
+                // column at all — the same trade the fixture's missing-price row is there to model.
+                column("hours", xpath("$ratingBlock/following-sibling::div[1]/div[2]"))
+            }
+        }
+
     /** The smallest possible real-world read. Static, server-rendered, unlikely to move. */
     val ExampleDotComTitle =
         workflow(id = "example-title", name = "example.com title") {
@@ -249,13 +516,15 @@ object SampleWorkflows {
 
     val all: List<Workflow> =
         listOf(
+            AmazonSearchResults,
+            GoogleMapsPlaces,
+            HackerNewsTopStory,
             AgentsEyeView,
             BridgeRoundTrip,
             FormEcho,
             FixtureSearchResults,
-            AmazonSearchResults,
+            ConditionalSteps,
             ExampleDotComTitle,
-            HackerNewsTopStory,
         )
 }
 

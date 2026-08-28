@@ -13,6 +13,8 @@ import dev.ggoggam.vitre.core.webview.AndroidWebViewController
 import dev.ggoggam.vitre.core.webview.DEFAULT_NAVIGATION_TIMEOUT_MS
 import dev.ggoggam.vitre.core.webview.DEFAULT_SCRIPT_TIMEOUT_MS
 import dev.ggoggam.vitre.core.webview.WebViewController
+import dev.ggoggam.vitre.core.webview.applyVitreLayoutParams
+import dev.ggoggam.vitre.core.webview.applyVitreWebSettings
 
 /**
  * A pool of lanes for Android: one `WebView` each, every site loaded as a top-level document.
@@ -106,11 +108,17 @@ class AndroidWebViewPool(
 
     private fun newWebView(context: Context): WebView =
         WebView(context).apply {
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
+            // A lane is handed to the caller to put in a hierarchy, so it is the caller who
+            // could get the layout params wrong — and getting them wrong costs a silently blank
+            // page whose DOM still extracts correctly. Defaulted here so that only a caller who
+            // deliberately replaces them can reintroduce it. See applyVitreLayoutParams.
+            applyVitreLayoutParams()
+            // JavaScript, DOM storage and the user agent — shared with the `vitre-compose` host so
+            // a page cannot behave differently in one and not the other.
+            applyVitreWebSettings()
             // A lane may be pointed at plain http, and a page that ends up mixed is otherwise
-            // blocked silently. No useWideViewPort/loadWithOverviewMode: these are main frames, so
-            // a site's viewport meta tag is honoured on its own.
+            // blocked silently. Lane-only: the composable host is showing a page to a person, and
+            // relaxing mixed content there is the host app's call rather than this library's.
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
             // No webViewClient here: AndroidWebViewController installs its own and that is also
             // where the interceptor is wired in. Overwriting it removes both.

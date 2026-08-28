@@ -87,13 +87,25 @@ interface WebViewBridge {
 - `LoadHtml(html, baseUrl?)` — load a document directly, for pages the caller owns
 - `PostMessage(message)` — send a bridge message to the page
 - `AwaitMessage(type, into, timeoutMs)` — suspends until the page posts a matching bridge message
+- `If(condition, then, otherwise)` — the first step that contains steps, for the element that is
+  only *sometimes* there and for branching on a variable an earlier step extracted. `Condition` is a
+  sealed type (`Exists`, `VariableEquals`, `VariableMatches`, `JsTruthy`, `Not`, `AllOf`, `AnyOf`)
+  rather than a JS string, so a failure can say which part of it went wrong. The DSL calls it
+  `runIf`, to keep it distinguishable from the build-time Kotlin `if` one line above.
 
 Every element-addressing step takes a `Locator` — `css("…")` or `xpath("…")`. A bare string still
 means CSS, so the shorthand constructors keep the common case short. XPath earns its keep where CSS
 cannot reach: matching on visible text, walking up the tree (`ancestor::`), selecting an attribute
 as a node, positional predicates, and `count()`. Neither pierces shadow DOM.
 
-`WorkflowEngine.run(workflow): Flow<WorkflowEvent>` takes a `WebViewController` and emits `StepStarted` → `StepCompleted` per step, `Completed(variables)` at the end, or `Failed(stepIndex, message)`.
+`WorkflowEngine.run(workflow): Flow<WorkflowEvent>` takes a `WebViewController` and emits `StepStarted` → `StepCompleted` per step, `Completed(variables)` at the end, or `Failed(path, message)`.
+
+Events carry a `StepPath` rather than a flat index, because `If` made a workflow a tree: a step
+inside a branch renders as `2.then.0`, and `Workflow.walk()` / `Workflow.stepAt(path)` map between
+the two for a caller that wants to draw one. A composite step's `StepCompleted` comes *after* its
+branch, so the stream nests the way the steps do. A path names a step in the program rather than an
+execution of it — which is what makes it usable as a map key, and what keeps loop iterations out of
+it when loops arrive.
 
 ## Use-case-driven TDD
 

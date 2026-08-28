@@ -2,6 +2,7 @@ package dev.ggoggam.vitre.core.frame
 
 import dev.ggoggam.vitre.core.net.NetworkTap
 import dev.ggoggam.vitre.core.webview.WebViewController
+import dev.ggoggam.vitre.core.workflow.StepPath
 import dev.ggoggam.vitre.core.workflow.Workflow
 import dev.ggoggam.vitre.core.workflow.WorkflowEngine
 import dev.ggoggam.vitre.core.workflow.WorkflowEvent
@@ -100,7 +101,18 @@ class FramePool internal constructor(
                             // IllegalStateException) must cost this one task and nothing else — the
                             // same contract the engine keeps for a step that throws. Letting it
                             // escape the launch would cancel every other lane's in-flight work.
-                            send(PoolEvent(index, laneId, workflow, WorkflowEvent.Failed(0, t.message ?: "lane reset failed")))
+                            //
+                            // Reported against step 0 for want of anywhere truer to point: the
+                            // workflow has no path that names a step the pool took on its behalf.
+                            // What is accurate either way is that nothing past step 0 ran.
+                            send(
+                                PoolEvent(
+                                    index,
+                                    laneId,
+                                    workflow,
+                                    WorkflowEvent.Failed(StepPath.root(0), t.message ?: "lane reset failed"),
+                                ),
+                            )
                             continue
                         }
                         WorkflowEngine(controller, context).run(workflow).collect { event ->

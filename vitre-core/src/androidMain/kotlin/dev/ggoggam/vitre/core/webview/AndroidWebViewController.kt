@@ -2,6 +2,7 @@ package dev.ggoggam.vitre.core.webview
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.net.Uri
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -17,7 +18,11 @@ import dev.ggoggam.vitre.core.bridge.BridgeReady
 import dev.ggoggam.vitre.core.bridge.DefaultWebViewBridge
 import dev.ggoggam.vitre.core.bridge.WebViewBridge
 import dev.ggoggam.vitre.core.bridge.WebViewInbox
+import dev.ggoggam.vitre.core.concurrent.WebViewDispatcher
 import dev.ggoggam.vitre.core.net.AndroidNetworkInterceptor
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import kotlin.coroutines.resume
 
 /**
@@ -137,6 +142,82 @@ class AndroidWebViewController(
         }
     }
 
+    /**
+     * Draws the WebView into a bitmap, then compresses it — the two halves deliberately in
+     * different places.
+     *
+     * `View.draw(Canvas)` is the whole of Android's answer here: it renders exactly what the view
+     * would paint on screen, at its current scroll position, which is the viewport this method
+     * promises. There is no full-page variant worth having on this platform; see
+     * [WebViewController.screenshot].
+     *
+     * **The draw is scaled on the canvas rather than by resampling afterwards.** A 1080×2400
+     * viewport is roughly 10MB at `ARGB_8888`, and capturing at full size only to shrink it means
+     * paying that plus the target — on the device where memory is scarcest. `Canvas.scale` makes
+     * the platform rasterise straight into the bitmap the caller asked for.
+     *
+     * **The compress runs off the WebView thread and outside the ordering lock.** PNG-encoding a
+     * megapixel is tens of milliseconds of pure CPU; doing it on the main thread is dropped frames,
+     * and doing it under the lock makes every other caller wait on work that no longer touches the
+     * WebView.
+     *
+     * Two honest caveats. Content composited by the GPU rather than drawn — a `<video>` surface, and
+     * some WebGL — is not part of what `draw` produces and comes out as the layer's background.
+     * And a WebView that has never been laid out has no size to draw, which is reported rather than
+     * silently returned as a 1×1 image.
+     */
+    override suspend fun screenshot(options: ScreenshotOptions): PageScreenshot {
+        checkOpen()
+        val capture =
+            serializer.exclusively {
+                withContext(WebViewDispatcher) { drawScaled(options) }
+            }
+        return withContext(Dispatchers.Default) { capture.encode(options) }
+    }
+
+    /** Runs on the WebView thread, under the ordering lock. Allocates the target-sized bitmap only. */
+    private fun drawScaled(options: ScreenshotOptions): Capture {
+        val sourceWidth = webView.width
+        val sourceHeight = webView.height
+        if (sourceWidth <= 0 || sourceHeight <= 0) {
+            throw ScreenshotFailedException(
+                "The WebView is ${sourceWidth}x$sourceHeight — it has not been laid out, so there is nothing to draw",
+            )
+        }
+        val size = options.fit(sourceWidth, sourceHeight)
+        val bitmap = Bitmap.createBitmap(size.width, size.height, Bitmap.Config.ARGB_8888)
+        Canvas(bitmap).apply {
+            scale(size.width.toFloat() / sourceWidth, size.height.toFloat() / sourceHeight)
+            webView.draw(this)
+        }
+        return Capture(bitmap, size)
+    }
+
+    private class Capture(
+        private val bitmap: Bitmap,
+        private val size: ScreenshotSize,
+    ) {
+        fun encode(options: ScreenshotOptions): PageScreenshot {
+            val stream = ByteArrayOutputStream()
+            val compressed =
+                try {
+                    bitmap.compress(options.format.toCompressFormat(), options.quality, stream)
+                } finally {
+                    // Recycled either way: the bytes are out, and waiting for the collector to
+                    // notice a 10MB native allocation is how a lane pool runs a device out of heap.
+                    bitmap.recycle()
+                }
+            if (!compressed) throw ScreenshotFailedException("Android refused to encode the bitmap as ${options.format}")
+            return PageScreenshot(stream.toByteArray(), options.format, size.width, size.height)
+        }
+
+        private fun ScreenshotFormat.toCompressFormat(): Bitmap.CompressFormat =
+            when (this) {
+                ScreenshotFormat.Png -> Bitmap.CompressFormat.PNG
+                ScreenshotFormat.Jpeg -> Bitmap.CompressFormat.JPEG
+            }
+    }
+
     override suspend fun <T> exclusively(block: suspend (ExclusiveAccess) -> T): T {
         checkOpen()
         return serializer.exclusively(block)
@@ -175,6 +256,36 @@ class AndroidWebViewController(
             view: WebView,
             request: WebResourceRequest,
         ): WebResourceResponse? = interceptor?.intercept(request)
+
+        /**
+         * Refuses navigations to schemes this WebView cannot render a document from.
+         *
+         * A page that wants to hand off to a native app navigates the *main frame* to
+         * `intent://…;package=com.google.android.apps.maps;end` (or `market://`, or a vendor's own
+         * scheme). A browser turns that into an `Intent`; a bare WebView has no such rule, so it
+         * tries to fetch the URL, fails with `ERR_UNKNOWN_URL_SCHEME`, and — because that is a
+         * main-frame failure — [onReceivedError] below fails the navigation and takes the workflow
+         * with it. The page that was loading is replaced by an error page, so retrying lands
+         * nowhere either.
+         *
+         * Returning true leaves the current document in place, which is the outcome a workflow
+         * wants: the handoff was the page's idea, not the caller's, and the automation is here to
+         * drive the web page rather than to leave for an app. Google Maps is the case that found
+         * this — it reads the `wv` token in an Android WebView's user agent and redirects
+         * unconditionally, whether or not the app is installed — but nothing about the rule is
+         * specific to it.
+         *
+         * The scheme list, and the reasoning for deciding by what the WebView can *render* rather
+         * than by blocklisting the schemes seen so far, live in [RENDERABLE_SCHEMES] — shared with
+         * iOS's `decidePolicyForNavigationAction` so the two platforms cannot drift.
+         *
+         * Not called for the app's own `loadUrl`/`loadDataWithBaseURL` calls, so this sits on
+         * page-initiated navigation only and no step can be refused by it.
+         */
+        override fun shouldOverrideUrlLoading(
+            view: WebView,
+            request: WebResourceRequest,
+        ): Boolean = !isRenderableScheme(request.url.scheme)
 
         override fun onPageStarted(
             view: WebView,
