@@ -283,10 +283,28 @@ object SampleWorkflows {
      * locator below matches nothing. The Amazon workflow draws this lesson the other way round, by
      * keying on class names *because* it cannot pin the language; here the language can be pinned,
      * so it is.
+     *
+     * `@37.5556,126.9723,16z` is load-bearing for a different reason, and it replaced a query that
+     * read `coffee+near+Seoul+Station`. That phrasing looks like it pins the search and does not:
+     * it hands Maps free text with no viewport, so "near Seoul Station" is a hint to the ranker
+     * rather than a bound on it. Maps picked its own viewport from the request's IP and returned
+     * what it liked within that, which on a signed-out phone in Gangnam put a cafe in Seongsu —
+     * some eight kilometres away — at the top of the list. `@lat,lng,zoom` bounds the area
+     * geometrically instead, so every row really is near the station.
+     *
+     * What it does **not** buy is a stable list, and it is worth not pretending otherwise: Google
+     * reranks within the viewport between runs, so which places come back and in what order still
+     * changes from one run to the next. The bound is on *where*, not on *what*. A demo that has to
+     * assert on specific names wants the fixture workflows, not this one.
+     *
+     * Worth being clear about what was *not* wrong, because all three were suspected first: the
+     * stray row was in the DOM before anything scrolled, it was an `article` in the same list as
+     * every other result rather than a leak from some other pane, and the WebView carries no
+     * Google session, so nothing was personalised to anyone.
      */
     val GoogleMapsPlaces =
         workflow(id = "google-maps-places", name = "Google Maps places nearby") {
-            navigate("https://www.google.com/maps/search/coffee+near+Seoul+Station/?hl=en")
+            navigate("https://www.google.com/maps/search/coffee/@37.5556,126.9723,16z/?hl=en")
             // A result row has no id, no `data-` attribute and no role — its container is a
             // minified class and nothing else. The one node in the row under a stable contract is
             // the rating, which is a `role="img"` with the score spelled out in its `aria-label`
@@ -386,30 +404,50 @@ object SampleWorkflows {
                 into = "listView",
             )
             waitFor(row, timeoutMs = 20_000)
-            // Maps renders the list a screen at a time. On a phone-sized viewport the pane holds
-            // one row when it first appears and each scroll to the bottom loads roughly one more,
-            // so extracting straight after the wait above returns a single place — which reads as
-            // Google refusing to answer when in fact nothing has asked for the rest yet.
+            // Maps renders the list a screen at a time, so extracting straight after the wait above
+            // returns the handful of places that fit on screen — which reads as Google refusing to
+            // answer when in fact nothing has asked for the rest yet.
             //
             // This is the one script here that has to *wait*, and it can: `evaluateJs` awaits a
             // promise rather than returning it, so the loop lives in the page instead of being
-            // spread across a dozen alternating scroll and wait steps. It gives up early when a
-            // pass stops adding rows, which is what keeps it inside the 15s a script has to settle.
+            // spread across a dozen alternating scroll and wait steps.
             //
             // It finds the container to scroll the same way the row locator finds a row: by walking
-            // *up* from something stable. The list's own scroller has a minified class like
-            // everything else here, but "nearest ancestor of a result row that has more content
-            // than it can show" names it without depending on that.
+            // *up* from something stable. The list's scroller has a minified class like everything
+            // else here, so it is named by what it *is* rather than by what it is called.
             //
-            // It used to scroll every scrollable container on the page instead, which was simpler
-            // and wrong in a way nothing caught while the viewport bug was live: `#app` is itself
-            // scrollable, so scrolling everything scrolled the entire application shell to its
-            // bottom and left the finished run showing an empty strip of page. With the layout
-            // collapsed to zero height nothing was scrollable, so the damage only appeared once the
-            // rendering was fixed.
+            // Two earlier versions of that walk were wrong, and the second failure is the subtler
+            // one. It first scrolled every scrollable container on the page, which scrolled the
+            // application shell — `#app` is itself scrollable — to its bottom and left the finished
+            // run showing an empty strip of page. The fix was to take the nearest ancestor of a row
+            // with more content than it can show, and *that* is the version that returned one
+            // place: `scrollHeight > clientHeight` is a question about content, not about
+            // scrolling. It is equally true of any `overflow: visible` wrapper whose content spills
+            // out of it, and assigning `scrollTop` to one of those silently does nothing — no
+            // movement, no scroll event, no fetch. Maps' pane is wrapped in several such divs, so
+            // the walk stopped at a wrapper, every pass was a no-op, and two passes later the run
+            // concluded the list had ended. A pane that will not move and a list that has run out
+            // look identical from the row count alone, which is why neither is inferred from it
+            // here.
             //
-            // The count it returns is the honest one — how many rows the pane ended up holding, as
-            // against the ten `limit` would have taken.
+            // So candidacy is the computed `overflow-y` — the durable fact about the scroller, and
+            // true of the feed even while it holds too few rows to overflow — and the candidate is
+            // then confirmed by scrolling it and reading `scrollTop` back. Anything that does not
+            // move is put back where it was found and the walk continues upwards.
+            //
+            // It polls for new rows rather than sleeping a fixed guess after each scroll: the fetch
+            // usually lands well inside a second, and when it does not, a flat sleep reads the
+            // count mid-flight and calls the pass dry. The whole loop is bounded at 11s against the
+            // 15s a script has to settle, because a loop that outlives its own budget reports as a
+            // script timeout rather than as "the list stopped growing" — the more misleading of the
+            // two failures.
+            //
+            // If it gained nothing at all it restores the pane's scroll position, so the worst case
+            // is a run that extracts what was already on screen rather than one that finishes over
+            // a blank page.
+            //
+            // What it returns says what happened rather than only how many rows there are, because
+            // a bare count cannot distinguish "Maps has five coffee shops" from "nothing scrolled".
             evaluateJs(
                 script =
                     """
@@ -418,27 +456,48 @@ object SampleWorkflows {
                       const rows = () => document.evaluate(
                         "${row.expression}", document, null, 7, null);
                       const count = () => rows().snapshotLength;
-                      const scrollable = (el) => el.scrollHeight > el.clientHeight + 40;
-                      // The list's scroller, reached by walking up from a row rather than named.
-                      const paneOf = (el) => {
-                        for (let p = el && el.parentElement; p; p = p.parentElement) {
-                          if (scrollable(p)) return p;
-                        }
-                        return null;
-                      };
+                      // Ten, because that is what `extractRows` below will take.
+                      const target = 10;
+                      const deadline = Date.now() + 11000;
+
+                      const first = rows().snapshotItem(0);
+                      if (!first) return 'no rows to scroll from';
+                      // Before the probe below, which can itself load a row.
+                      const start = count();
+
+                      // Scrolling boxes above a row, nearest first.
+                      const panes = [];
+                      for (let p = first.parentElement; p; p = p.parentElement) {
+                        const oy = getComputedStyle(p).overflowY;
+                        if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') panes.push(p);
+                      }
+
+                      // The first one that actually moves. Everything else is left as found.
+                      let pane = null;
+                      let origin = 0;
+                      for (const p of panes) {
+                        const before = p.scrollTop;
+                        p.scrollTop = p.scrollHeight;
+                        if (p.scrollTop > before) { pane = p; origin = before; break; }
+                        p.scrollTop = before;
+                      }
+
+                      if (!pane) return 'rows ' + start + ', nothing above them scrolls';
+
                       let seen = count();
                       let dry = 0;
-                      for (let pass = 0; pass < 8 && seen < 8; pass++) {
-                        const pane = paneOf(rows().snapshotItem(0));
-                        if (!pane) break;
+                      while (seen < target && Date.now() < deadline) {
                         pane.scrollTop = pane.scrollHeight;
-                        await sleep(1100);
-                        const now = count();
-                        dry = now === seen ? dry + 1 : 0;
-                        seen = now;
-                        if (dry >= 2) break;
+                        const until = Math.min(Date.now() + 2500, deadline);
+                        let now = seen;
+                        while (Date.now() < until && (now = count()) === seen) await sleep(150);
+                        if (now === seen) { if (++dry >= 2) break; } else { dry = 0; seen = now; }
                       }
-                      return seen;
+                      if (seen === start) {
+                        pane.scrollTop = origin;
+                        return 'rows ' + seen + ', scrolled but the list did not grow';
+                      }
+                      return 'rows ' + seen + ' (from ' + start + ')';
                     })()
                     """.trimIndent(),
                 into = "placeCount",
