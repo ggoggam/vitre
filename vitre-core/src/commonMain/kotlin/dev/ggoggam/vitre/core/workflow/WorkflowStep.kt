@@ -31,11 +31,155 @@ sealed class WorkflowStep {
         constructor(selector: String) : this(css(selector))
     }
 
-    data class Input(
-        val locator: Locator,
-        val text: String,
-    ) : WorkflowStep() {
-        constructor(selector: String, text: String) : this(css(selector), text)
+    /**
+     * Drives one control the way a person would: type into it, tick it, pick from it, press a key
+     * at it.
+     *
+     * A family rather than one step with a string, because *what to put in* is not one kind of
+     * thing. `Input(box, "false")` would have to mean **untick**, and every rule that could make it
+     * mean that — truthiness, a table of accepted spellings — is a rule the call site cannot see. A
+     * `Boolean` argument cannot be got wrong. The same goes for a `<select>`, where the string is
+     * matched against two different things, and for a keystroke, which puts nothing in at all.
+     *
+     * They share a [locator] and a [text] rendering of what they will apply, so anything that
+     * already handles `Input` — a step list, an event log — keeps working across all four.
+     *
+     * Every one of them **reports what happened** instead of resolving to `null` and carrying on.
+     * That is the difference this family was introduced for: each of these actions has a way to
+     * fail that leaves the DOM looking as though it worked, so a step that cannot see the outcome
+     * is a step that reports success on a form the page never received.
+     */
+    sealed class Input : WorkflowStep() {
+        abstract val locator: Locator
+
+        /**
+         * What this step will apply, as one line of text.
+         *
+         * For logs and failure messages only — nothing reads it back. The direction matters: a
+         * `Boolean` *rendered* as `"true"` is a legible trace, whereas a `"true"` *parsed* as a
+         * boolean is exactly the guess this family exists to remove.
+         */
+        abstract val text: String
+
+        /**
+         * Types [text] into a text field, a `<textarea>`, a `<select>` or a contenteditable
+         * element, replacing whatever was there.
+         *
+         * Assigning `el.value` — what this step used to do — is not what typing does, and against a
+         * React-controlled field it is worse than useless. React installs its own `value` setter on
+         * the element to track the DOM against its state; a plain assignment goes through it, so
+         * the tracker concludes nothing changed, `onChange` never fires, the component's state
+         * stays empty and the form submits without the text. Nothing reports an error, and a later
+         * [Extract] with [Extract.Source.Property] reads back the value this step wrote — so the
+         * workflow *confirms* a value the application never received. `InputJs` documents the
+         * setter used instead.
+         *
+         * A `<select>` is filled by choosing the option [text] names, on the same match
+         * [SelectOption] makes; a contenteditable by replacing its contents, not by appending at
+         * the caret. Anything else fails rather than having a stray `value` property hung on it.
+         */
+        data class Fill(
+            override val locator: Locator,
+            override val text: String,
+        ) : Input() {
+            constructor(selector: String, text: String) : this(css(selector), text)
+        }
+
+        /**
+         * Puts a checkbox or radio button into the state [checked], by clicking it if it is not
+         * already there.
+         *
+         * Clicking rather than assigning `el.checked`, and the difference is the whole step.
+         * Assignment moves the DOM property and fires nothing at all, so a page listening for
+         * `change` — which is every page that does anything when you tick a box — never learns.
+         * `click()` runs the browser's own activation behaviour: it flips `checked`, fires `input`
+         * and `change`, and reaches a framework's synthetic event system, the way a finger does.
+         *
+         * Clicking is also why the current state has to be read first. An unconditional click
+         * toggles a box that was already right, which is the likeliest way for re-running a
+         * workflow to undo it.
+         */
+        data class SetChecked(
+            override val locator: Locator,
+            val checked: Boolean,
+        ) : Input() {
+            constructor(selector: String, checked: Boolean) : this(css(selector), checked)
+
+            override val text: String get() = checked.toString()
+        }
+
+        /**
+         * Selects the option of a `<select>` identified by [option] — its `value`, or failing that
+         * the label a user reads.
+         *
+         * Both, in that order, because the two halves of this library disagreed about what names an
+         * option. `PageSnapshot` renders one by its accessible *name*, so an agent that reads
+         * `option "Large"` and passes it straight back was hitting `el.value = 'Large'` — and a
+         * `<select>` silently discards a value no option carries, leaving the control blank and the
+         * step green. When neither matches, this says so and lists what the control does offer,
+         * which is the one thing that makes the failure recoverable without another round trip.
+         *
+         * [Fill] makes the same match, so `input(select, "Large")` also works. This spelling adds
+         * the check that the target *is* a `<select>`, so a locator that has drifted onto a text
+         * box fails instead of quietly typing "Large" into it.
+         */
+        data class SelectOption(
+            override val locator: Locator,
+            val option: String,
+        ) : Input() {
+            constructor(selector: String, option: String) : this(css(selector), option)
+
+            override val text: String get() = option
+        }
+
+        /**
+         * Focuses the element and dispatches [key] as a real keystroke would — `keydown`, then
+         * `keypress` for a key that produces a character, then `keyup`, each carrying `key`, `code`
+         * and the legacy `keyCode`/`which` that a lot of shipped page code still reads.
+         *
+         * Nothing else in the vocabulary can do this. [Fill] fires `input` and `change`, so a box
+         * whose page listens for `keydown` — every type-ahead, every arrow-key menu, every
+         * Enter-to-search — saw the text appear and no keystroke arrive.
+         *
+         * **It does not perform the browser's own default action**, and cannot: a dispatched event
+         * is `isTrusted:false`, so pressing a printable key inserts no character and pressing Enter
+         * in a plain `<form>` does not submit it. What runs is the page's own handlers, which is
+         * what a scripted page needs and all that is honestly available. To submit a plain form,
+         * [Click] its submit button. To type text, use [Fill].
+         *
+         * [key] is a single character, or a named key spelled as the DOM spells it — `Enter`,
+         * `Tab`, `Escape`, `ArrowDown`. `code` is the physical key on a US layout, which is the
+         * same convention the DevTools protocol uses. Anything else fails at the step rather than
+         * dispatching an event no keyboard could have produced.
+         */
+        data class Press(
+            override val locator: Locator,
+            val key: String,
+        ) : Input() {
+            constructor(selector: String, key: String) : this(css(selector), key)
+
+            override val text: String get() = key
+        }
+
+        /**
+         * Keeps `Input(selector, text)` and `Input(locator, text)` meaning what they always meant.
+         *
+         * They were the only spellings before this step became a family, they are still the common
+         * case, and every existing caller — the MCP `type` tool included — writes one of them. An
+         * `invoke` rather than a constructor because a sealed class has none to offer: the call
+         * resolves here and builds a [Fill], so the compatibility is exact rather than approximate.
+         */
+        companion object {
+            operator fun invoke(
+                locator: Locator,
+                text: String,
+            ): Fill = Fill(locator, text)
+
+            operator fun invoke(
+                selector: String,
+                text: String,
+            ): Fill = Fill(css(selector), text)
+        }
     }
 
     /**

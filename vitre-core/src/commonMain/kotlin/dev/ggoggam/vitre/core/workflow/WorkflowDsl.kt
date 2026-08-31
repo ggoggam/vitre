@@ -145,12 +145,60 @@ class WorkflowScope internal constructor() {
     fun input(
         locator: Locator,
         text: String,
-    ) = step(WorkflowStep.Input(locator, text))
+    ) = step(WorkflowStep.Input.Fill(locator, text))
 
     fun input(
         selector: String,
         text: String,
-    ) = step(WorkflowStep.Input(selector, text))
+    ) = step(WorkflowStep.Input.Fill(selector, text))
+
+    /**
+     * Ticks or unticks a checkbox, or turns a radio button on.
+     *
+     * A `Boolean` and not a string, deliberately — see [WorkflowStep.Input] for what
+     * `input(box, "false")` would have had to mean.
+     */
+    fun setChecked(
+        locator: Locator,
+        checked: Boolean,
+    ) = step(WorkflowStep.Input.SetChecked(locator, checked))
+
+    fun setChecked(
+        selector: String,
+        checked: Boolean,
+    ) = step(WorkflowStep.Input.SetChecked(selector, checked))
+
+    /**
+     * Picks the option of a `<select>` named by [option] — its `value`, or the label a user reads.
+     *
+     * The label is the half that matters when the workflow was written from a snapshot, which
+     * prints options by their accessible name.
+     */
+    fun selectOption(
+        locator: Locator,
+        option: String,
+    ) = step(WorkflowStep.Input.SelectOption(locator, option))
+
+    fun selectOption(
+        selector: String,
+        option: String,
+    ) = step(WorkflowStep.Input.SelectOption(selector, option))
+
+    /**
+     * Presses [key] at the element — `Enter`, `ArrowDown`, `Escape`, or a single character.
+     *
+     * What it does *not* do is the browser's default action; see [WorkflowStep.Input.Press]. To
+     * aim at whatever currently has focus, `press(css(":focus"), "Enter")`.
+     */
+    fun press(
+        locator: Locator,
+        key: String,
+    ) = step(WorkflowStep.Input.Press(locator, key))
+
+    fun press(
+        selector: String,
+        key: String,
+    ) = step(WorkflowStep.Input.Press(selector, key))
 
     fun extract(
         locator: Locator,
