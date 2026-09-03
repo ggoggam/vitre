@@ -12,6 +12,7 @@ import dev.ggoggam.vitre.koog.tools.ExtractRowsTool
 import dev.ggoggam.vitre.koog.tools.ExtractTool
 import dev.ggoggam.vitre.koog.tools.ListSessionsTool
 import dev.ggoggam.vitre.koog.tools.NavigateTool
+import dev.ggoggam.vitre.koog.tools.ReadNetworkTool
 import dev.ggoggam.vitre.koog.tools.ReleaseLeaseTool
 import dev.ggoggam.vitre.koog.tools.SendMessageTool
 import dev.ggoggam.vitre.koog.tools.SnapshotTool
@@ -59,6 +60,7 @@ fun vitreWebViewTools(
         add(EvaluateTool(driver))
         add(SendMessageTool(driver))
         add(AwaitMessageTool(driver))
+        add(ReadNetworkTool(driver))
         if (includeLeaseTools) {
             add(AcquireLeaseTool(driver))
             add(ReleaseLeaseTool(driver))

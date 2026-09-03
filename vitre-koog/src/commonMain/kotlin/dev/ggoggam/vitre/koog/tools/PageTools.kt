@@ -438,6 +438,60 @@ class AwaitMessageTool(
     ): String = driver.awaitMessage(args.type, args.timeoutMs, target)
 }
 
+// ── read_network ───────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The captured traffic, rather than the rendered page.
+ *
+ * A [VitreTool] rather than a [VitrePageTool], and the difference is the missing `lease`. Every
+ * other page tool acts on the WebView and belongs inside whatever sequence the caller is protecting;
+ * this one reads a buffer, so there is no claim to honour and no ambient lease to thread in. See
+ * [PageDriver.readNetwork].
+ */
+class ReadNetworkTool(
+    driver: PageDriver,
+) : VitreTool<ReadNetworkTool.Args, String>(
+        driver = driver,
+        argsType = typeToken<Args>(),
+        resultType = typeToken<String>(),
+        name = "read_network",
+        description = PageToolDocs.READ_NETWORK,
+    ) {
+    @Serializable
+    data class Args(
+        @property:LLMDescription(PageToolDocs.URL_CONTAINS)
+        @SerialName("url_contains")
+        val urlContains: String? = null,
+        @property:LLMDescription(PageToolDocs.NETWORK_LIMIT)
+        val limit: Int = PageDriver.DEFAULT_NETWORK_LIMIT,
+        @property:LLMDescription(PageToolDocs.MAX_BODY_CHARS)
+        @SerialName("max_body_chars")
+        val maxBodyChars: Int = PageDriver.DEFAULT_NETWORK_BODY_CHARS,
+        @property:LLMDescription(SESSION)
+        val session: String? = null,
+    )
+
+    override suspend fun run(
+        args: Args,
+        metadata: ToolCallMetadata,
+    ): String =
+        PageToolReplies.network(
+            driver.readNetwork(
+                urlContains = args.urlContains,
+                limit = args.limit,
+                maxBodyChars = args.maxBodyChars,
+                session = args.session,
+            ),
+        )
+
+    // Verbatim, like every other page tool's reply: a traffic listing that arrives quoted and
+    // backslash-escaped costs tokens twice and reads as a string literal rather than as JSON.
+    override fun encodeResultToString(
+        result: String,
+        serializer: JSONSerializer,
+    ): String = result
+}
+
 // ── leases ─────────────────────────────────────────────────────────────────────────────────────
 
 /**

@@ -78,6 +78,22 @@ object PageToolDocs {
 
     const val TTL: String = "How long to hold it before it expires (default 30000)."
 
+    const val URL_CONTAINS: String =
+        "Only exchanges whose URL contains this, matched case-insensitively anywhere in the URL. " +
+            "Use it: a page load is easily 50 requests and you almost always want one of them, " +
+            "e.g. \"/api/search\" or just \"search\"."
+
+    const val NETWORK_LIMIT: String =
+        "Maximum exchanges to return, newest first (default 10). Newest first because the request " +
+            "you are asking about is usually the one you just caused."
+
+    const val MAX_BODY_CHARS: String =
+        "How much of each response body to show, in characters (default 2000, max 20000). Use 0 " +
+            "to list the traffic with no bodies at all — do that first when you do not yet know " +
+            "which request you want, then call again with a `url_contains` naming it. Bodies are " +
+            "the valuable part and the expensive part; a truncated one is always labelled as such, " +
+            "so never treat a body that says it was cut as the whole answer."
+
     // ── Tools ──────────────────────────────────────────────────────────────────────────────────
 
     const val LIST_SESSIONS: String =
@@ -133,6 +149,33 @@ object PageToolDocs {
         "Waits for the page to post a `{id, type, payload}` message of the given type via " +
             "`window.vitre.postMessage`, and returns it. Matches one the page already sent as well " +
             "as one still to come, so it is safe to call after the action that triggers it."
+
+    /**
+     * The one description that spends most of its words on what the tool *cannot* see.
+     *
+     * Deliberately. Every other tool fails loudly when it is wrong — a bad selector matches nothing
+     * and says so. This one succeeds and returns an empty list, and a model reads that as "the
+     * request was never made" unless it has been told otherwise. The platform gap is real, it is
+     * documented in `docs/PARALLEL-LANES.md`, and a model that does not know about it will draw a
+     * confident wrong conclusion from a correct answer.
+     */
+    const val READ_NETWORK: String =
+        "Reads the HTTP exchanges this WebView captured — method, URL, status, timing and the " +
+            "response body — newest first. Often a better source than the rendered page: a shop " +
+            "that draws its results from `GET /api/search` hands over typed JSON here, price as a " +
+            "number and stock as a boolean, where the DOM has the same price split across three " +
+            "spans. Narrow with `url_contains`; when you do not yet know which request you want, " +
+            "call it once with `max_body_chars: 0` to list the traffic cheaply, then again naming " +
+            "the one you want.\n\n" +
+            "What is visible depends on the platform, and an exchange missing here is NOT evidence " +
+            "that the request did not happen. On Android and desktop the traffic is watched from " +
+            "below the page, so every request is visible. On iOS there is no such hook: the page " +
+            "is asked to report on itself, so only its own `fetch` and `XMLHttpRequest` calls " +
+            "appear — document loads, images and stylesheets never do, and a page that replaces " +
+            "`fetch` with its own before the tap is installed reports nothing at all. Only traffic " +
+            "from after the app started capturing is held, and the oldest is dropped once the " +
+            "buffer is full. If what you are looking for is not here, read the page with " +
+            "`snapshot` and `extract` instead of concluding it was never fetched."
 
     const val ACQUIRE_LEASE: String =
         "Takes a WebView for several calls in a row, so no other caller — another agent, a " +

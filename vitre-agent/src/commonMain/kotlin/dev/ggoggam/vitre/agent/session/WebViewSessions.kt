@@ -1,5 +1,6 @@
 package dev.ggoggam.vitre.agent.session
 
+import dev.ggoggam.vitre.core.net.NetworkLog
 import dev.ggoggam.vitre.core.webview.WebViewController
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -12,6 +13,28 @@ data class WebViewSession(
     val controller: WebViewController,
     /** Shown in `list_sessions`, so the agent can tell two WebViews apart. */
     val description: String = "",
+    /**
+     * Retained network traffic for this WebView, if the host wired any. Null is the default and
+     * means `read_network` is refused for this session rather than answered with an empty list.
+     *
+     * It is a *separate* registration from [controller] because the two come from different places
+     * and neither implies the other. A `WebViewController` knows nothing about the network — the
+     * tap lives on the pool that built the WebView, on the platform's own interception hook or on a
+     * script injected into the page — so there is no property to reach it through, and a host that
+     * registers a bare controller genuinely has no traffic to offer.
+     *
+     * Where a tap can be got from today, which is not everywhere:
+     *
+     *  - **A pool, on all three platforms.** `AndroidWebViewPool.tap`, `IosWebViewPool.tap`,
+     *    `KcefWebViewPool.tap`, or `FramePool.tap`, each wrapped in
+     *    [dev.ggoggam.vitre.core.net.retainIn].
+     *  - **A single Android WebView**, by handing `AndroidWebViewController` an
+     *    `AndroidNetworkInterceptor`, which is itself a tap.
+     *  - **Nowhere else yet.** A single `WKWebView` or CEF browser has no tap plumbing of its own —
+     *    the scripted tap and the CEF interceptor are installed by their pools — and neither does
+     *    the `VitreWebView` composable on any platform.
+     */
+    val network: NetworkLog? = null,
 )
 
 /**
@@ -40,13 +63,20 @@ class WebViewSessions {
     /**
      * Makes [controller] reachable as [id]. Re-registering an id replaces it, which is what a
      * recomposition that rebuilt the WebView needs.
+     *
+     * [network] is what `read_network` reads. A pool's tap covers every lane in that pool and a
+     * [dev.ggoggam.vitre.core.net.NetworkExchange] does not say which lane it came from, so
+     * registering one pool's log under several lane sessions gives each of them the *pool's* whole
+     * traffic. That is honest but coarse; a host that needs traffic attributed per lane wants a
+     * pool per lane.
      */
     fun register(
         id: String,
         controller: WebViewController,
         description: String = "",
+        network: NetworkLog? = null,
     ) {
-        state.update { it + (id to WebViewSession(id, controller, description)) }
+        state.update { it + (id to WebViewSession(id, controller, description, network)) }
     }
 
     /** Call when the WebView goes away, so tool calls fail saying so rather than driving a corpse. */
