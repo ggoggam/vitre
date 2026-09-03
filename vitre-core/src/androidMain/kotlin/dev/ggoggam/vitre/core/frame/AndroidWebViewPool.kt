@@ -52,10 +52,13 @@ class AndroidWebViewPool(
     context: Context,
     laneCount: Int = Lanes.MAX_LANES,
     /**
-     * Interception is what makes fixtures, the tap and CORS relaxation work, and by default it
-     * covers the lane's own document — see [InterceptionPolicy.interceptMainFrame], which is worth
-     * reading before pointing a pool at real sites, since a document this library refetched is not
-     * byte-for-byte a document the browser fetched.
+     * Interception is what makes fixtures, the tap and CORS relaxation work, and it does **nothing**
+     * by default beyond answering from [InterceptionPolicy.handlers] — so a pool built without a
+     * policy loads every site through the browser's own network stack.
+     *
+     * [InterceptionPolicy.AUTOMATION] turns the rest on, and is worth reading before pointing a
+     * pool at real sites under it: a document this library refetched is not byte-for-byte a
+     * document the browser fetched, and a site that fingerprints its clients will notice.
      */
     policy: InterceptionPolicy = InterceptionPolicy(),
     scriptTimeoutMs: Long = DEFAULT_SCRIPT_TIMEOUT_MS,

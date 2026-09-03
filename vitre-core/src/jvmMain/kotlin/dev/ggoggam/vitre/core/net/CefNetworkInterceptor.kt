@@ -110,8 +110,6 @@ class CefNetworkInterceptor(
         if (scheme != "http" && scheme != "https") return null
 
         val isForMainFrame = request.resourceType == CefRequest.ResourceType.RT_MAIN_FRAME
-        if (isForMainFrame && !policy.interceptMainFrame) return null
-
         val method = request.method?.uppercase() ?: "GET"
         val headers = HashMap<String, String>().also { request.getHeaderMap(it) }
         val intercepted = InterceptedRequest(url = url, method = method, headers = headers, isForMainFrame = isForMainFrame)
@@ -123,8 +121,10 @@ class CefNetworkInterceptor(
 
         if (!policy.intercept(intercepted)) {
             // Declining a stylesheet is routine and reporting it would drown the tap. Declining a
-            // *document* is worth saying out loud, because that is the case where a lane can end up
-            // showing something nobody chose and nothing anywhere explains why.
+            // *document* is recorded, because it is the difference between a page the browser
+            // fetched and a page this library refetched — which is the first thing worth knowing
+            // when a lane renders something nobody expected, and which under the default policy is
+            // every page. The tap is where that answer lives.
             if (intercepted.looksLikeDocument()) {
                 recorder.passthrough(intercepted, "declined by InterceptionPolicy.intercept")
             }
@@ -236,9 +236,10 @@ class CefNetworkInterceptor(
  *
  * The cost is a genuine seam worth knowing about: a session established by an intercepted response
  * lives here, and one established by a request Chromium loaded itself lives in CEF's jar, so the
- * two halves of a login flow can end up on opposite sides. In practice a lane's document *is*
- * intercepted by default ([InterceptionPolicy.interceptMainFrame]), which keeps a site's own
- * navigation on one side of the seam.
+ * two halves of a login flow can end up on opposite sides. Under the default policy nothing is
+ * intercepted and this jar stays empty, so the seam only exists for a caller who asked for
+ * interception — and [InterceptionPolicy.AUTOMATION] keeps the document on this side of it, which
+ * is the half a site's own login flow runs through.
  */
 private object JvmCookieJar : CookieJar {
     private val jar = java.net.CookieManager().apply { setCookiePolicy(CookiePolicy.ACCEPT_ALL) }

@@ -2,7 +2,9 @@ package dev.ggoggam.vitre.core.net
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * The header surgery that makes a lane possible, tested without a WebView.
@@ -12,7 +14,11 @@ import kotlin.test.assertNull
  * place means a fetch the CORS headers had already allowed still coming back blocked.
  */
 class HeaderRewriterTest {
-    private val policy = InterceptionPolicy()
+    /**
+     * The preset, not the default. Rewriting is what this class does, and a default-constructed
+     * policy deliberately does none of it — which the last test here is what holds in place.
+     */
+    private val policy = InterceptionPolicy.AUTOMATION
 
     @Test
     fun `leaves the framing headers alone because a lane is a top-level document`() {
@@ -141,5 +147,52 @@ class HeaderRewriterTest {
         assertNull(out["content-encoding"])
         assertEquals("https://shop.example", out["Access-Control-Allow-Origin"])
         assertEquals(1, out.keys.count { it.equals("access-control-allow-origin", ignoreCase = true) })
+    }
+
+    @Test
+    fun `rewrites nothing at all under a default policy`() {
+        // The whole of the default's promise, in one assertion: a caller who did not ask for
+        // interception gets the server's own answer, including a CSP that will block a
+        // cross-origin fetch and the absence of any allowance to make one. Relaxing CORS on
+        // somebody's behalf hands a page credentialed reads the site wrote its policy to refuse,
+        // which is not a thing to do because a constructor was called with no arguments.
+        val out =
+            HeaderRewriter.rewriteResponseHeaders(
+                headers =
+                    mapOf(
+                        "Content-Security-Policy" to "connect-src 'self'",
+                        "Access-Control-Allow-Origin" to "https://only-this-one.example",
+                        "Content-Type" to "text/html",
+                    ),
+                requestOrigin = "https://shop.example",
+                policy = InterceptionPolicy(),
+            )
+        assertEquals("connect-src 'self'", out["Content-Security-Policy"])
+        assertEquals("https://only-this-one.example", out["Access-Control-Allow-Origin"])
+        assertEquals("text/html", out["Content-Type"])
+        assertNull(out["Access-Control-Allow-Credentials"])
+        assertNull(out["Access-Control-Allow-Methods"])
+    }
+
+    @Test
+    fun `leaves the main frame to the browser under a default policy`() {
+        // The two halves of removing `interceptMainFrame`. The predicate is the only switch now,
+        // and it says nothing about handlers: a fixture answers a document either way, because
+        // answering from memory pays none of the costs that made refetching a document a decision.
+        val document =
+            InterceptedRequest(
+                url = "https://shop.example/search?q=keyboard",
+                method = "GET",
+                headers = mapOf("Accept" to "text/html,application/xhtml+xml"),
+                isForMainFrame = true,
+            )
+        assertFalse(InterceptionPolicy().intercept(document))
+        assertTrue(InterceptionPolicy.AUTOMATION.intercept(document))
+
+        // And the recipe named on `intercept`, for a caller who wants its XHR rewritten and its
+        // pages fetched by the browser.
+        val nativeDocuments = InterceptionPolicy(intercept = { !it.isForMainFrame && isDocumentOrData(it) })
+        assertFalse(nativeDocuments.intercept(document))
+        assertTrue(nativeDocuments.intercept(document.copy(isForMainFrame = false)))
     }
 }
