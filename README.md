@@ -284,7 +284,7 @@ var pool by remember { mutableStateOf<FramePool?>(null) }
 
 VitreFrameHost(
     laneCount = 4,
-    policy = InterceptionPolicy(handlers = shopFixtures),
+    policy = InterceptionPolicy(permissiveCors = true, handlers = shopFixtures),
     onPoolReady = { pool = it },
 )
 
@@ -314,11 +314,18 @@ val fixtures = RequestHandler { request ->
 VitreFrameHost(policy = InterceptionPolicy(handlers = listOf(fixtures)), …)
 ```
 
+Handlers are the one part of interception that is on by default, and the only part a fixture needs:
+a default-constructed `InterceptionPolicy` answers from them and otherwise leaves the network
+alone, so a lane pointed at a real site gets the document the browser would have fetched rather
+than one this library refetched. `InterceptionPolicy.AUTOMATION` opts into the rest — CORS and CSP
+relaxation, the network tap, documents and data taken off the network — for a pool driving sites
+the app deliberately automates.
+
 Interception is real on Android and the desktop, which both let an application answer a request
 outright: `shouldInterceptRequest` on one, CEF's resource pipeline on the other. iOS is the
 exception, since `WKURLSchemeHandler` refuses to register for `https`, so fixtures there are served
-from a private scheme and nothing can rewrite a response header. The failure modes are spelled out
-in [docs/PARALLEL-LANES.md](docs/PARALLEL-LANES.md).
+from a private scheme and nothing can rewrite a response header. The failure modes, and why the
+default reversed, are spelled out in [docs/PARALLEL-LANES.md](docs/PARALLEL-LANES.md).
 
 ### 7. Let an agent drive the page
 

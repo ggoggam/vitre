@@ -184,8 +184,8 @@ until it lets go. Measured, four lanes against sites answering in 1500ms each:
 | fetch on a worker (current) | 1743ms | together |
 
 Four times one, exactly. The renderers were parallel the whole time — the network in front of them
-was a queue of one, and since `interceptMainFrame` defaults on, every lane's *document* went through
-it.
+was a queue of one, and since the policy of the day intercepted documents by default, every lane's
+*document* went through it.
 
 So the decision to intercept is made on the IO thread, because it is pure predicate work, and the
 fetch is handed to a worker. `CefResourceHandler.processRequest` returning true *without* calling
@@ -202,19 +202,49 @@ The same rule applies to a `RequestHandler`. Those still run on the IO thread, b
 answers is part of the decision, so a handler that blocks blocks every lane. Fixtures served from
 memory are what they are for.
 
-### `interceptMainFrame` is a real decision now
+### Interception is off by default, and that is the second time this reversed
 
-Under iframes the main frame was the library's own host document and intercepting it bought nothing,
-so it defaulted off. A lane *is* the main frame, so it defaults **on**: it is the one request that
-carries the site, and with it off a `RequestHandler` never answers a document and the tap never sees
-one.
+It has now been defaulted three ways, and each move was made by something breaking.
 
-The cost is worth stating plainly, because it applies to every real site a lane loads. Interception
-refetches through `HttpURLConnection`, which is not the browser's network stack: HTTP/1.1, no shared
-cache, redirects followed by hand (so the document's `location` is the URL that was *requested*
-rather than the one that answered), the cookie jar bridged across by hand, and a `POST` navigation
-passed through untouched because the platform hook exposes no request body. A pool driving real
-sites that needs nothing rewritten should turn it off; a pool serving fixtures cannot.
+Under iframes the main frame was the library's own host document, so intercepting it bought nothing
+and `interceptMainFrame` defaulted **off**. A lane *is* the main frame — it is the one request that
+carries the site — so the flag flipped **on**, and the tap and fixtures started seeing documents.
+Then real sites started refusing to render. A refetched document is not the document the browser
+would have fetched, and the sites that care about that answer with a challenge page, which fills a
+lane with "Webpage not available" and is indistinguishable from a lane that failed to load. So the
+whole of interception now defaults to **doing nothing**, and `interceptMainFrame` is gone.
+
+Gone rather than flipped, because it was a second switch for something `intercept` already said.
+The predicate is handed the request, `InterceptedRequest.isForMainFrame` is on it, and
+`{ !it.isForMainFrame && isDocumentOrData(it) }` is the same instruction with one fewer place to
+look. It was also dead code on iOS, which has no interception hook to gate.
+
+Removing it fixed a coupling worth naming, because it is what made the old default hard to change.
+Both interceptors gated on the flag *above* the handler check, so `interceptMainFrame = false` also
+stopped a `RequestHandler` from answering a document — and a handler answering from memory pays
+none of the costs the flag existed to control. Handlers are now consulted before the predicate is
+asked, on both platforms, which is what lets the default be inert without breaking a single
+fixture. `intercept = { false }` and a list of handlers is a complete offline test.
+
+What a caller opts into, then:
+
+| | `handlers` | refetch | CORS + CSP | tap |
+|---|---|---|---|---|
+| `InterceptionPolicy()` | yes | — | — | passthrough notes only |
+| `OBSERVE_ONLY` | yes | documents + data | — | everything intercepted |
+| `AUTOMATION` | yes | documents + data | yes | everything intercepted |
+
+The cost of the bottom two rows is worth stating plainly, because it applies to every real site a
+lane loads under them. Interception refetches through `HttpURLConnection`, which is not the
+browser's network stack: HTTP/1.1, no shared cache, redirects followed by hand (so the document's
+`location` is the URL that was *requested* rather than the one that answered), the cookie jar
+bridged across by hand, and a `POST` navigation passed through untouched because the platform hook
+exposes no request body.
+
+Which is why a pool driving real sites reaches for `AUTOMATION` deliberately, or narrows it to
+`{ !it.isForMainFrame && isDocumentOrData(it) }` and gets the browser's own document load back — at
+the price named under CORS below, since there is then no intercepted document to widen a
+`connect-src` on.
 
 ### Why desktop refetches too
 
@@ -285,8 +315,8 @@ reports a timeout. They are worth naming because none of them is guessable from 
 **1. Intercepting everything starves the page.** `shouldInterceptRequest` is synchronous and blocks
 the resource it handles, and a real site is mostly images, fonts, CSS and script — none of which
 need anything done to them, all of which compete with the document and the API calls that do.
-`InterceptionPolicy.intercept` defaults to documents and data, which took `developer.mozilla.org`
-in a lane from 200 intercepted requests to 22.
+`InterceptionPolicy.intercept` defaults to nothing at all, and `AUTOMATION` narrows it to documents
+and data — which took `developer.mozilla.org` in a lane from 200 intercepted requests to 22.
 
 **2. `disconnect()` costs a TLS handshake per resource.** `HttpURLConnection.disconnect()` in a
 `finally` looks like hygiene and is the opposite: it removes the socket from the keep-alive pool.
@@ -340,17 +370,24 @@ mechanism exists for, and it ships twice:
   interceptor can supply an `Access-Control-Allow-Origin` the server never sent, and blocked on iOS,
   where nothing can rewrite a response header.
 
-  It is a diagnostic rather than a scraper, and it is the part that rots: sites change, and a bot
-  challenge renders in a lane as "Webpage not available", which looks exactly like a lane failing
-  to load when nothing is wrong.
+  It is the one scenario that asks for `InterceptionPolicy.AUTOMATION`, because the fetch it
+  reports is the thing being measured — and it therefore also pays for it: all four documents are
+  refetched rather than loaded by the browser. That is a diagnostic rather than a scraper, and it
+  is the part that rots: sites change, and a bot challenge renders in a lane as "Webpage not
+  available", which looks exactly like a lane failing to load when nothing is wrong.
 
 ## Consequences worth being explicit about
 
 Reflecting `Origin` into `Access-Control-Allow-Origin` with credentials means a site's cookies ride
-along with reads that the site's own CORS policy was written to refuse. This is Android's alone —
-iOS reflects nothing — and it is why `InterceptionPolicy` is opt-in per WebView, defaults to
-intercepting documents and data only, and is not something to point at a WebView that renders
-untrusted content.
+along with reads that the site's own CORS policy was written to refuse. This is Android's and the
+desktop's — iOS reflects nothing — and it is why `permissiveCors` is **off** in a
+default-constructed `InterceptionPolicy` and lives behind `AUTOMATION` instead.
+
+It used to be on by default, which was the wrong way round on its own terms: `VitreFrameHost` takes
+a policy and shows a WebView to a person, so the one line of advice this section exists to give —
+do not point this at a WebView rendering content someone else chose — was contradicted by the
+constructor a caller reaches for first. A switch that widens what a page may read should be typed
+out by whoever wanted it.
 
 ## The arrangement that was deleted, and what measuring it said
 

@@ -85,7 +85,11 @@ object LaneScenarios {
             summary = "Four cross-origin shops searched at once, merged and sorted by delivered price.",
             queryLabel = "Product",
             defaultQuery = "mechanical keyboard",
-            policy = InterceptionPolicy(handlers = ShopFixtures.handlers),
+            // Every request here is answered from memory, so there is nothing to take off the
+            // network and `intercept` stays at its default of nothing. `permissiveCors` is not
+            // optional though: Nordic Parts reads its prices from a *different* fixture origin,
+            // and the CORS headers get added to a handled response the same as to a fetched one.
+            policy = InterceptionPolicy(permissiveCors = true, handlers = ShopFixtures.handlers),
             sites =
                 listOf(
                     alphaHardware(),
@@ -123,7 +127,12 @@ object LaneScenarios {
             summary = "Four real sites driven at once, each inspected from inside the document it landed on.",
             queryLabel = null,
             comparesPrices = false,
-            policy = InterceptionPolicy(),
+            // The one scenario that needs the whole of interception, because the cross-origin
+            // fetch it reports is the thing being measured. It is therefore also the scenario
+            // that pays for it: every one of these four documents is refetched through
+            // `HttpURLConnection` rather than loaded by the browser, which is why a site that
+            // did not challenge a lane last month may start doing so.
+            policy = InterceptionPolicy.AUTOMATION,
             navigationTimeoutMs = 90_000,
             sites =
                 listOf(
