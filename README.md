@@ -73,12 +73,24 @@ codebase for every platform, and a snapshot format an agent can read.
 The sample gallery on Android. The same screens run on iOS and the desktop from the same
 `composeApp`; past 720dp wide the list and the runner sit side by side instead of taking turns.
 
-| | |
-|---|---|
-| <img src="docs/images/gallery.png" alt="The Vitre gallery index" width="420"> | <img src="docs/images/workflow-run.png" alt="A completed workflow and its step trace" width="420"> |
-| **The index.** The agent chat, the parallel-lane scenarios, then one card per single-page workflow. | **A workflow, run.** The page on top, every step underneath with what it actually did. Steps 4 and 5 address elements by the handles `Snapshot` issued, not by selectors. |
-| <img src="docs/images/price-scout.png" alt="Price scout comparing four shops by delivered price" width="420"> | <img src="docs/images/agent-chat.png" alt="The agent chat showing an MCP tool result and the answer derived from it" width="420"> |
-| **Price scout.** An example workflow to retrieve info from third-party websites. | **Agent chat.** A mocked model over a real MCP server: each action on the page is a `tools/call`, shown with the JSON that came back rather than hidden behind the answer. |
+<table>
+<tr>
+<td width="50%"><img src="docs/images/gallery.png" alt="The Vitre gallery index" width="420"></td>
+<td width="50%"><img src="docs/images/workflow-run.png" alt="A completed workflow and its step trace" width="420"></td>
+</tr>
+<tr>
+<td width="50%"><b>The index.</b> The agent chat, the parallel-lane scenarios, then one card per single-page workflow.</td>
+<td width="50%"><b>A workflow, run.</b> The page on top, every step underneath with what it actually did. Steps 4 and 5 address elements by the handles <code>Snapshot</code> issued, not by selectors.</td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/images/price-scout.png" alt="Price scout comparing four shops by delivered price" width="420"></td>
+<td width="50%"><img src="docs/images/agent-chat.png" alt="The agent chat showing an MCP tool result and the answer derived from it" width="420"></td>
+</tr>
+<tr>
+<td width="50%"><b>Price scout.</b> An example workflow to retrieve info from third-party websites.</td>
+<td width="50%"><b>Agent chat.</b> A mocked model over a real MCP server: each action on the page is a <code>tools/call</code>, shown with the JSON that came back rather than hidden behind the answer.</td>
+</tr>
+</table>
 
 What each entry demonstrates is spelled out in
 [What's in the sample gallery](#whats-in-the-sample-gallery); to run it yourself, see
@@ -103,10 +115,10 @@ Published to Maven Central, so `mavenCentral()` in your repositories is all the 
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            implementation("dev.ggoggam.vitre:vitre-core:0.1.0")
-            implementation("dev.ggoggam.vitre:vitre-compose:0.1.0") // optional
-            implementation("dev.ggoggam.vitre:vitre-mcp:0.1.0")     // optional
-            implementation("dev.ggoggam.vitre:vitre-koog:0.1.0")    // optional
+            implementation("dev.ggoggam.vitre:vitre-core:0.1.2")
+            implementation("dev.ggoggam.vitre:vitre-compose:0.1.2") // optional
+            implementation("dev.ggoggam.vitre:vitre-mcp:0.1.2")     // optional
+            implementation("dev.ggoggam.vitre:vitre-koog:0.1.2")    // optional
         }
     }
 }
@@ -272,7 +284,7 @@ var pool by remember { mutableStateOf<FramePool?>(null) }
 
 VitreFrameHost(
     laneCount = 4,
-    policy = InterceptionPolicy(handlers = shopFixtures),
+    policy = InterceptionPolicy(permissiveCors = true, handlers = shopFixtures),
     onPoolReady = { pool = it },
 )
 
@@ -302,11 +314,18 @@ val fixtures = RequestHandler { request ->
 VitreFrameHost(policy = InterceptionPolicy(handlers = listOf(fixtures)), …)
 ```
 
+Handlers are the one part of interception that is on by default, and the only part a fixture needs:
+a default-constructed `InterceptionPolicy` answers from them and otherwise leaves the network
+alone, so a lane pointed at a real site gets the document the browser would have fetched rather
+than one this library refetched. `InterceptionPolicy.AUTOMATION` opts into the rest — CORS and CSP
+relaxation, the network tap, documents and data taken off the network — for a pool driving sites
+the app deliberately automates.
+
 Interception is real on Android and the desktop, which both let an application answer a request
 outright: `shouldInterceptRequest` on one, CEF's resource pipeline on the other. iOS is the
 exception, since `WKURLSchemeHandler` refuses to register for `https`, so fixtures there are served
-from a private scheme and nothing can rewrite a response header. The failure modes are spelled out
-in [docs/PARALLEL-LANES.md](docs/PARALLEL-LANES.md).
+from a private scheme and nothing can rewrite a response header. The failure modes, and why the
+default reversed, are spelled out in [docs/PARALLEL-LANES.md](docs/PARALLEL-LANES.md).
 
 ### 7. Let an agent drive the page
 
