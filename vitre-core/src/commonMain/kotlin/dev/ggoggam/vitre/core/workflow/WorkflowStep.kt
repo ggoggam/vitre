@@ -1,9 +1,18 @@
 package dev.ggoggam.vitre.core.workflow
 
 sealed class WorkflowStep {
+    /**
+     * Loads [url], which may be assembled from variables — see [Template].
+     *
+     * The [String] constructor is the one nearly every workflow wants and it means a *literal* URL,
+     * with no interpolation of any kind. Reach for [template] only when the address depends on
+     * something an earlier step extracted.
+     */
     data class Navigate(
-        val url: String,
-    ) : WorkflowStep()
+        val url: Template,
+    ) : WorkflowStep() {
+        constructor(url: String) : this(Template.Literal(url))
+    }
 
     /**
      * Loads [html] directly, without a network round trip.
@@ -31,11 +40,23 @@ sealed class WorkflowStep {
         constructor(selector: String) : this(css(selector))
     }
 
+    /**
+     * Types [text] into the first element [locator] matches, which may be assembled from variables
+     * — see [Template].
+     *
+     * Assigns the DOM *property* `el.value` and then fires `input` and `change`, which is what a
+     * framework-backed field listens for. See [Extract] for why reading it back needs
+     * [Extract.Source.Property] rather than an attribute.
+     */
     data class Input(
         val locator: Locator,
-        val text: String,
+        val text: Template,
     ) : WorkflowStep() {
-        constructor(selector: String, text: String) : this(css(selector), text)
+        constructor(locator: Locator, text: String) : this(locator, Template.Literal(text))
+
+        constructor(selector: String, text: String) : this(css(selector), Template.Literal(text))
+
+        constructor(selector: String, text: Template) : this(css(selector), text)
     }
 
     /**

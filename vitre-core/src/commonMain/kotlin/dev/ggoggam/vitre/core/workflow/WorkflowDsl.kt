@@ -123,6 +123,9 @@ class WorkflowScope internal constructor() {
 
     fun navigate(url: String) = step(WorkflowStep.Navigate(url))
 
+    /** [navigate], to an address assembled from variables — `navigate(template("…/{sku}"))`. */
+    fun navigate(url: Template) = step(WorkflowStep.Navigate(url))
+
     fun loadHtml(
         html: String,
         baseUrl: String? = null,
@@ -150,6 +153,17 @@ class WorkflowScope internal constructor() {
     fun input(
         selector: String,
         text: String,
+    ) = step(WorkflowStep.Input(selector, text))
+
+    /** [input], with text assembled from variables — `input("#q", template("{brand} {model}"))`. */
+    fun input(
+        locator: Locator,
+        text: Template,
+    ) = step(WorkflowStep.Input(locator, text))
+
+    fun input(
+        selector: String,
+        text: Template,
     ) = step(WorkflowStep.Input(selector, text))
 
     fun extract(

@@ -78,7 +78,7 @@ class WorkflowEngine(
                 val body = if (taken) step.then else step.otherwise
                 runSteps(body, variables) { path.child(branch, it) }
             } else {
-                attempt(path) { dispatch(step, variables) }
+                attempt(path) { dispatch(step, variables, path) }
             }
             emit(WorkflowEvent.StepCompleted(path))
         }
@@ -156,6 +156,24 @@ class WorkflowEngine(
             }
         }
 
+    /**
+     * Fills in [template]'s variables from [variables].
+     *
+     * Routed through [require] so that a template naming something no step set fails exactly the
+     * way [Condition.VariableEquals] does, with the same list of what *was* set. Substituting an
+     * empty string instead would produce a URL that is syntactically fine and points somewhere
+     * nobody asked for, which is the failure this whole type exists to avoid.
+     */
+    private fun Template.resolve(
+        variables: Map<String, String>,
+        path: StepPath,
+    ): String =
+        when (this) {
+            is Template.Literal -> value
+            is Template.Variable -> variables.require(name, path)
+            is Template.Parts -> of.joinToString("") { it.resolve(variables, path) }
+        }
+
     private fun Map<String, String>.require(
         name: String,
         path: StepPath,
@@ -168,11 +186,12 @@ class WorkflowEngine(
     private suspend fun dispatch(
         step: WorkflowStep,
         variables: MutableMap<String, String>,
+        path: StepPath,
     ) {
         checkHandles(step)
         when (step) {
             is WorkflowStep.Navigate -> {
-                controller.navigate(step.url)
+                controller.navigate(step.url.resolve(variables, path))
             }
 
             is WorkflowStep.LoadHtml -> {
@@ -198,7 +217,7 @@ class WorkflowEngine(
             is WorkflowStep.Input -> {
                 controller.evaluateJs(
                     "(function(){var el=${LocatorJs.first(step.locator)};" +
-                        "if(el){el.value=${jsString(step.text)};" +
+                        "if(el){el.value=${jsString(step.text.resolve(variables, path))};" +
                         "el.dispatchEvent(new Event('input',{bubbles:true}));" +
                         "el.dispatchEvent(new Event('change',{bubbles:true}));}})()",
                 )

@@ -154,7 +154,7 @@ fun WorkflowStep.label(): String =
 fun WorkflowStep.detail(): String =
     when (this) {
         is WorkflowStep.Navigate -> {
-            url
+            url.describe()
         }
 
         is WorkflowStep.LoadHtml -> {
@@ -170,7 +170,7 @@ fun WorkflowStep.detail(): String =
         }
 
         is WorkflowStep.Input -> {
-            "${locator.short()} ← \"$text\""
+            "${locator.short()} ← \"${text.describe()}\""
         }
 
         is WorkflowStep.Extract -> {
@@ -221,8 +221,12 @@ fun WorkflowStep.detail(): String =
 fun Workflow.originUrl(): String? =
     walk().firstNotNullOfOrNull { (_, step) ->
         when (step) {
-            is WorkflowStep.Navigate -> step.url
+            // `describe()` rather than a resolved URL: this runs before the workflow does, so a
+            // templated address has no values to fill in yet and the pattern is the honest answer.
+            is WorkflowStep.Navigate -> step.url.describe()
+
             is WorkflowStep.LoadHtml -> step.baseUrl ?: "bundled fixture"
+
             else -> null
         }
     }
