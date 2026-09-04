@@ -384,6 +384,7 @@ private fun RunSheet(
                     step = flat.step,
                     state = state.stateOf(flat.path),
                     depth = flat.depth,
+                    note = state.fanOuts[flat.path]?.summary(),
                 )
             }
             state.error?.let { message ->

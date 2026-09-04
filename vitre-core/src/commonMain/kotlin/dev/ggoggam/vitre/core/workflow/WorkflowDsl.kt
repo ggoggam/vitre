@@ -121,6 +121,44 @@ class WorkflowScope internal constructor() {
         ),
     )
 
+    /**
+     * Appends a [WorkflowStep.ForEach]: run [body] once per element of the JSON array in [over],
+     * with the element bound as [item], and collect what each run produced into [into].
+     *
+     * ```
+     * extractRows(rows = "li.result", into = "results") {
+     *     column("title", "h3")
+     *     column("url", "a", from = Source.Property("href"))
+     * }
+     * forEach(over = "results", item = "product", into = "details") {
+     *     navigate(template("{product.url}"))
+     *     waitFor("#price")
+     *     extract("#price", into = "price")
+     * }
+     * ```
+     *
+     * Runs against the page, not at build time, which is what lets it iterate over something an
+     * earlier step extracted — the same distinction [runIf] draws against a Kotlin `if`, and the
+     * reason a Kotlin `for` over a fixed list is *not* what this is: that would append the body's
+     * steps N times, and could not visit pages it does not know yet. See [WorkflowStep.ForEach]
+     * for what the body sees and what a fan-out costs.
+     */
+    fun forEach(
+        over: String,
+        item: String,
+        into: String,
+        limit: Int = 20,
+        body: WorkflowScope.() -> Unit,
+    ) = step(
+        WorkflowStep.ForEach(
+            over = over,
+            item = item,
+            into = into,
+            body = WorkflowScope().apply(body).build(),
+            limit = limit,
+        ),
+    )
+
     fun navigate(url: String) = step(WorkflowStep.Navigate(url))
 
     /** [navigate], to an address assembled from variables — `navigate(template("…/{sku}"))`. */

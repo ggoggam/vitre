@@ -107,6 +107,37 @@ swap gets trimmed. Either way, fewer lanes costs wall-clock and nothing else,
 because `FramePool.run` queues: six workflows in a pool of two run three deep rather than losing
 four of them.
 
+## Lanes are borrowed, and a fan-out is a page barrier
+
+A workflow does not own a lane for its run. The pool is a `LaneSource`, and a `WorkflowEngine`
+borrows a lane from it before its first step, keeps it across the steps that follow, and gives it
+back at the end — and at every `ForEach`. The items of the fan-out then borrow lanes of their own,
+several at once on a pool and one after another on a single WebView, and when the last item is
+done the workflow borrows again for whatever comes next. Every lease starts on a blank lane.
+
+The order matters and is not taste. If a parent kept its lane while waiting for its children, N
+fan-outs on an N-lane pool would each hold a lane and wait for one, and nothing would ever finish;
+a bigger pool moves the cap without removing it. Because the parent gives its lane back *before*
+the first child asks, the children always have at least the lane the parent was on, so a pool of
+one finishes a fan-out and a pool of four finishes it faster. `FanOutLaneTest` runs both.
+
+What it costs is the document. The variables survive a fan-out; the page the workflow was looking
+at does not, and the step after a `forEach` starts on a blank lane. A `WaitFor` written as though
+the search results were still on screen times out, which is the honest outcome — the alternative
+is a WaitFor that matches the previous borrower's leftovers and reports success over a page that
+was never loaded.
+
+Cookies cross the barrier deliberately. Before a lane is returned at a fan-out, and after each
+item, the engine reads the lane's cookie jar once. On iOS that read is what makes WebKit gather
+each content process's cookies into the shared store, so a session one lane established is where
+the next lane's page will find it — whether that would happen promptly *without* the read is a
+question this repo could not measure (see the iOS note in `SharedCookieJarTest`), so the barrier
+does not depend on the answer. On Android the jar is process-wide and the read is merely cheap.
+
+`PoolEvent.laneId` follows the borrows: it is the lane of the task's most recent `LaneLeased`,
+and an item's events carry their own lane in `FanOutItem`. The Lanes tab shows a task on whichever
+lane it is on now.
+
 ## Network interception (Android and desktop)
 
 Two of the three platforms let an application answer a request outright, and they get the same

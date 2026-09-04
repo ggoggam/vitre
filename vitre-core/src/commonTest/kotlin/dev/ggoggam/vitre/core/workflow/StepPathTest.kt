@@ -24,6 +24,38 @@ class StepPathTest {
     fun renders_branches_by_name() {
         val path = StepPath.root(1).child(StepPath.Branch.Then, 0).child(StepPath.Branch.Else, 2)
         assertEquals("1.then.0.else.2", path.toString())
+        assertEquals("2.each.0", StepPath.root(2).child(StepPath.Branch.Each, 0).toString())
+    }
+
+    private val fanningOut =
+        workflow("wf", "fan-out") {
+            navigate("https://a.test")
+            forEach(over = "rows", item = "row", into = "out") {
+                navigate(template("{row.url}"))
+                runIf(exists("#x")) { click("#x") }
+            }
+            extract("#after", into = "after")
+        }
+
+    /** A body step has one path however many items run it — the path names the program, not a run. */
+    @Test
+    fun resolves_and_walks_a_fan_out_body() {
+        val body = StepPath.root(1).child(StepPath.Branch.Each, 0)
+        assertEquals(WorkflowStep.Navigate(template("{row.url}")), fanningOut.stepAt(body))
+        assertEquals(
+            WorkflowStep.Click(css("#x")),
+            fanningOut.stepAt(StepPath.root(1).child(StepPath.Branch.Each, 1).child(StepPath.Branch.Then, 0)),
+        )
+        // A ForEach has a body, not branches; an If has branches, not a body.
+        assertNull(fanningOut.stepAt(StepPath.root(1).child(StepPath.Branch.Then, 0)))
+        assertNull(fanningOut.stepAt(StepPath.root(1).child(StepPath.Branch.Each, 1).child(StepPath.Branch.Each, 0)))
+        assertEquals(
+            listOf("0", "1", "1.each.0", "1.each.1", "1.each.1.then.0", "2"),
+            fanningOut.walk().map { (path, _) -> path.toString() },
+        )
+        for ((path, step) in fanningOut.walk()) {
+            assertEquals(step, fanningOut.stepAt(path), "path $path")
+        }
     }
 
     @Test

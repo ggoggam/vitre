@@ -48,6 +48,34 @@ data class FlatStep(
 fun Workflow.flatSteps(): List<FlatStep> = walk().map { (path, step) -> FlatStep(path, step) }
 
 /**
+ * How far a [WorkflowStep.ForEach] has got, folded out of its [WorkflowEvent.FanOutItem]s.
+ *
+ * The body's steps have one row each in the timeline however many items run them, so the
+ * per-item story has nowhere to go but here: which items are on which lane right now, and how
+ * many have finished either way.
+ */
+data class FanOutProgress(
+    val count: Int,
+    val completed: Int,
+    val failed: Int,
+    /** Items in flight, by index, and the lane each is on. */
+    val running: Map<Int, String?>,
+) {
+    val done: Int get() = completed + failed
+
+    /** `3 of 8 done · 1 failed · running 4 on b, 5 on a`. */
+    fun summary(): String =
+        buildString {
+            append("$done of $count done")
+            if (failed > 0) append(" · $failed failed")
+            if (running.isNotEmpty()) {
+                append(" · running ")
+                append(running.entries.joinToString { (index, lane) -> "${index + 1}" + (lane?.let { " on $it" } ?: "") })
+            }
+        }
+}
+
+/**
  * A view of one workflow run, folded out of the [WorkflowEvent]s emitted so far.
  *
  * The engine emits a linear stream; the UI wants random access ("what is step 3 doing?"), so the
@@ -65,6 +93,8 @@ data class RunState(
     val error: String?,
     /** Row ordinal of the innermost step in flight, for "step 3 of 7". Null when nothing is. */
     val runningOrdinal: Int?,
+    /** Progress of every fan-out that has started, keyed by the `ForEach` step's path. */
+    val fanOuts: Map<StepPath, FanOutProgress> = emptyMap(),
 ) {
     /** Every step the workflow has, branches included — the denominator of the status pill. */
     val stepCount: Int get() = stepStates.size
@@ -85,8 +115,11 @@ fun runStateOf(
     var variables: Map<String, String> = emptyMap()
     // A stack rather than a single "currently running" slot, because a composite step stays running
     // while its branch runs: without this, the child's StepCompleted would report the enclosing
-    // `If` as finished too, and the header would go back to counting steps mid-run.
+    // `If` as finished too, and the header would go back to counting steps mid-run. It is a list
+    // rather than a set because several items of a fan-out can be on the same body step at once,
+    // and the step is still running until the last of them leaves it.
     val inFlight = mutableListOf<StepPath>()
+    val fanOuts = mutableMapOf<StepPath, FanOutProgress>()
 
     for (event in events) {
         when (event) {
@@ -112,6 +145,54 @@ fun runStateOf(
                 states[event.path] = StepState.Failed
                 inFlight.clear()
             }
+
+            // Which WebView the run is on is the pool screen's concern, not the timeline's.
+            is WorkflowEvent.LaneLeased -> {
+                Unit
+            }
+
+            is WorkflowEvent.FanOutItem -> {
+                val progress = fanOuts[event.path] ?: FanOutProgress(event.count, 0, 0, emptyMap())
+                fanOuts[event.path] =
+                    when (val inner = event.event) {
+                        is WorkflowEvent.LaneLeased -> {
+                            progress.copy(running = progress.running + (event.index to inner.laneId))
+                        }
+
+                        is WorkflowEvent.StepStarted -> {
+                            states[inner.path] = StepState.Running
+                            inFlight += inner.path
+                            progress
+                        }
+
+                        is WorkflowEvent.StepCompleted -> {
+                            inFlight -= inner.path
+                            if (inner.path !in inFlight) states[inner.path] = StepState.Done
+                            progress
+                        }
+
+                        is WorkflowEvent.Completed -> {
+                            progress.copy(completed = progress.completed + 1, running = progress.running - event.index)
+                        }
+
+                        // One item's failure is a line in the progress, not a red badge on a row
+                        // the next item is about to run successfully. The body step it died on
+                        // goes back to whatever the other items make of it.
+                        is WorkflowEvent.Failed -> {
+                            inFlight -= inner.path
+                            if (inner.path !in inFlight) states[inner.path] = StepState.Done
+                            progress.copy(failed = progress.failed + 1, running = progress.running - event.index)
+                        }
+
+                        is WorkflowEvent.FanOutItem -> {
+                            // A fan-out inside a fan-out: N items' worth of inner progress would
+                            // be N rows this sheet has no room for, so the inner one is folded
+                            // into its body steps only.
+                            fold(inner, states, inFlight)
+                            progress
+                        }
+                    }
+            }
         }
     }
 
@@ -130,7 +211,40 @@ fun runStateOf(
         error = error,
         // The innermost in-flight step: `If` → `Click` should read as the click, not the `If`.
         runningOrdinal = inFlight.lastOrNull()?.let { path -> order.indexOf(path).takeIf { it >= 0 } },
+        fanOuts = fanOuts,
     )
+}
+
+/** The body-step half of folding a nested fan-out's item events, without a progress line of its own. */
+private fun fold(
+    item: WorkflowEvent.FanOutItem,
+    states: MutableMap<StepPath, StepState>,
+    inFlight: MutableList<StepPath>,
+) {
+    when (val inner = item.event) {
+        is WorkflowEvent.StepStarted -> {
+            states[inner.path] = StepState.Running
+            inFlight += inner.path
+        }
+
+        is WorkflowEvent.StepCompleted -> {
+            inFlight -= inner.path
+            if (inner.path !in inFlight) states[inner.path] = StepState.Done
+        }
+
+        is WorkflowEvent.Failed -> {
+            inFlight -= inner.path
+            if (inner.path !in inFlight) states[inner.path] = StepState.Done
+        }
+
+        is WorkflowEvent.FanOutItem -> {
+            fold(inner, states, inFlight)
+        }
+
+        is WorkflowEvent.LaneLeased, is WorkflowEvent.Completed -> {
+            Unit
+        }
+    }
 }
 
 /** Short type name for a step, e.g. "Navigate". */
@@ -148,6 +262,7 @@ fun WorkflowStep.label(): String =
         is WorkflowStep.PostMessage -> "Post message"
         is WorkflowStep.AwaitMessage -> "Await message"
         is WorkflowStep.If -> "If"
+        is WorkflowStep.ForEach -> "For each"
     }
 
 /** The step's arguments, rendered as one monospace-friendly line. */
@@ -208,6 +323,10 @@ fun WorkflowStep.detail(): String =
             condition.describe().ellipsize(48) +
                 " ? ${then.size}" +
                 if (otherwise.isEmpty()) "" else " : ${otherwise.size}"
+        }
+
+        is WorkflowStep.ForEach -> {
+            "$item in $over, max $limit → $into · ${body.size} steps"
         }
     }
 
