@@ -44,8 +44,9 @@ class NavigateStepTest {
             // nothing may have been submitted to it yet.
             assertEquals(listOf("https://example.com"), controller.navigations)
             assertEquals(emptyList(), controller.evaluatedScripts)
-            assertEquals(1, events.size)
-            assertIs<WorkflowEvent.StepStarted>(events[0]).also { assertEquals(StepPath.root(0), it.path) }
+            assertEquals(2, events.size)
+            assertIs<WorkflowEvent.LaneLeased>(events[0])
+            assertIs<WorkflowEvent.StepStarted>(events[1]).also { assertEquals(StepPath.root(0), it.path) }
 
             pageLoaded.complete(Unit)
             run.join()

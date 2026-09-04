@@ -1,5 +1,6 @@
 package dev.ggoggam.vitre.core.workflow
 
+import dev.ggoggam.vitre.core.frame.LaneSource
 import dev.ggoggam.vitre.core.testing.FakeWebViewController
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
@@ -111,6 +112,7 @@ class IfStepTest {
             val inner = outer.child(StepPath.Branch.Then, 0)
             assertEquals(
                 listOf<WorkflowEvent>(
+                    WorkflowEvent.LaneLeased(LaneSource.SOLO_LANE_ID),
                     WorkflowEvent.StepStarted(outer, workflow.steps[0]),
                     WorkflowEvent.StepStarted(inner, WorkflowStep.Navigate("https://inner.test")),
                     WorkflowEvent.StepCompleted(inner),

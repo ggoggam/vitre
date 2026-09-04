@@ -117,6 +117,8 @@ fun StepRow(
     state: StepState,
     modifier: Modifier = Modifier,
     depth: Int = 0,
+    /** A live line under the detail — a fan-out's "3 of 8 done". Null for a step with nothing to add. */
+    note: String? = null,
 ) {
     val (fill, ink) = state.badgeColors()
     val badgeColor by animateColorAsState(fill)
@@ -158,6 +160,15 @@ fun StepRow(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (note != null) {
+                Text(
+                    text = note,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }

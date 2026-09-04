@@ -44,8 +44,9 @@ Vitre makes the page something you can drive: one ordering guarantee, one step v
 codebase for every platform, and a snapshot format an agent can read.
 
 - The steps are declarative: `Navigate`, `LoadHtml`, `WaitFor`, `Click`, `Input`, `Extract`,
-  `ExtractRows`, `Snapshot`, `EvaluateJs`, `PostMessage`, `AwaitMessage`, and `If` for the branches
-  the page decides rather than the builder.
+  `ExtractRows`, `Snapshot`, `EvaluateJs`, `PostMessage`, `AwaitMessage`, `If` for the branches
+  the page decides rather than the builder, and `ForEach` to visit every page an earlier step
+  found — search results in, one product page each out.
 - Elements are addressed three ways: CSS, XPath, and handles issued by a page snapshot.
 - `evaluateJs` returns a script's result JSON-encoded on every platform, so
   `controller.evaluate<Boolean>(…)` decodes it instead of comparing it against `"true"`.
@@ -56,8 +57,9 @@ codebase for every platform, and a snapshot format an agent can read.
   cookie the site keeps its session in and `document.cookie` cannot see, with
   host/path/`Secure`/`SameSite` scoping applied the way a request would apply it. Android and iOS
   have this today; the desktop reports `null` until CEF's two jars are reconciled.
-- A lane pool drives up to four sites at once: one WebView per lane, one workflow engine each,
-  queued so six workflows on a two-lane device run three deep instead of losing four.
+- A lane pool drives up to four sites at once: one WebView per lane, borrowed by whichever
+  workflow needs a page next, so six workflows on a two-lane device run three deep instead of
+  losing four, and a workflow that fans out spreads its pages over every lane.
 - `vitre-mcp` exposes the whole vocabulary as MCP tools over an in-process transport, and
   `vitre-koog` exposes it as native [Koog](https://github.com/JetBrains/koog) tools with a plugin
   that holds the page for the length of an agent run. Both read one set of semantics out of
@@ -192,7 +194,32 @@ extractRows(rows = xpath("//li[@data-sku]"), into = "results", limit = 10) {
 }
 ```
 
-### 3. Talk to a page you do own (hybrid apps)
+### 3. Then go into each result
+
+A search page names the products; the answers are one page further in, and there is one per row.
+`forEach` runs its body once per element of the array `ExtractRows` left behind, binding each as
+`product`, so `template("{product.url}")` is the address that row carried. Items run on lanes
+borrowed from the engine's `LaneSource` — one after another on a single WebView, several at once
+on a pool — and each leaves what it extracted in `details`, in row order, with a failing item
+recorded rather than fatal.
+
+```kotlin
+forEach(over = "results", item = "product", into = "details", limit = 4) {
+    navigate(template("{product.url}"))
+    waitFor("#productTitle", timeoutMs = 25_000)
+    extract("#productTitle", into = "title")
+    extract("#availability", into = "availability")
+}
+// Afterwards:
+val details = completed.decode<List<FanOutResult>>("details")
+```
+
+A fan-out is a page barrier: the workflow gives its lane back before the first item starts and
+borrows a fresh one afterwards, so the step after a `forEach` starts on a blank page with the
+variables intact. That is what makes a pool of any size safe from a parent holding the lane its
+children are waiting for — see [PARALLEL-LANES.md](docs/PARALLEL-LANES.md).
+
+### 4. Talk to a page you do own (hybrid apps)
 
 If the page is yours, the bridge beats scraping it. `PostMessage` sends a
 `MessageEvent('vitre')` into the page; `AwaitMessage` waits for `window.vitre.postMessage`
@@ -239,7 +266,7 @@ val ready: Boolean = controller.evaluate("document.readyState==='complete'")
 val rows: List<Product> = controller.evaluate("Array.from(document.querySelectorAll('li')).map(toRow)")
 ```
 
-### 4. Handle the page that is only sometimes there
+### 5. Handle the page that is only sometimes there
 
 A cookie banner, an interstitial, a login form that appears when the session lapsed. `waitFor` is
 the wrong tool for all of them — it fails the run when the thing legitimately is not there — and a
@@ -273,7 +300,7 @@ Branches nest, and step numbering nests with them: a failure inside one reports 
 `Exists` is deliberately the one condition where a missing element is an answer instead of an error,
 including for a stale snapshot handle, which every other step rejects outright.
 
-### 5. Search four sites at once
+### 6. Search four sites at once
 
 One WebView per lane, each loading its site as a top-level document, which is what keeps sessions
 first-party and `X-Frame-Options` out of the picture. Hand the pool every workflow and it drains
@@ -298,7 +325,7 @@ The sample's Price scout does exactly this: four synthetic shops at four distinc
 and ranked by delivered price, which for most of the catalogue is a different shop from the cheapest
 sticker price.
 
-### 6. Offline, deterministic page tests
+### 7. Offline, deterministic page tests
 
 A `RequestHandler` answers requests from memory, so a test drives a real WebView against a real
 origin with no network and no flake. This is how the parallel-lane demo stays a usable smoke test.
@@ -327,7 +354,7 @@ exception, since `WKURLSchemeHandler` refuses to register for `https`, so fixtur
 from a private scheme and nothing can rewrite a response header. The failure modes, and why the
 default reversed, are spelled out in [docs/PARALLEL-LANES.md](docs/PARALLEL-LANES.md).
 
-### 7. Let an agent drive the page
+### 8. Let an agent drive the page
 
 `Snapshot` answers the question a hand-written workflow never has to ask: what is on this page? It
 returns the interactive and text-bearing elements as an indented outline with a handle each, the
@@ -364,7 +391,7 @@ It ships an in-process transport only, on purpose: a loopback socket would expos
 anything on the device that can reach the port, and on a WebView signed into the user's accounts
 that leaks the session, not merely the automation. See [docs/MCP.md](docs/MCP.md).
 
-### 8. Give a Koog agent the same page
+### 9. Give a Koog agent the same page
 
 If the agent is written with [Koog](https://github.com/JetBrains/koog), `vitre-koog` hands it the
 same thirteen tools as Kotlin objects, with typed arguments, no server, and the same names, so a
@@ -508,8 +535,10 @@ Then the single-page workflows. Two of them drive a page the sample ships, loade
 WebView with no network. Those are the only ones that can demonstrate the bridge at all, since
 `AwaitMessage` waits for `window.vitre.postMessage` and no third-party site will ever call it, and
 they double as the smoke test: a failure means the library broke rather than that a website was
-redesigned. The other two hit the live web to show the same steps against real pages, and are the
-ones that will eventually rot.
+redesigned. The rest hit the live web to show the same steps against real pages, and are the ones
+that will eventually rot. Among them, "Amazon search → product pages" is the fan-out: it searches,
+then visits the first four results one after another on the gallery's single WebView, and the
+`For each` row in the timeline counts the product pages as they land.
 
 ### Releasing
 

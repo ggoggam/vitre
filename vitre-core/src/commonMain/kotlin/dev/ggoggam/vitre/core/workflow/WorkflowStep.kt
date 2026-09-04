@@ -204,4 +204,63 @@ sealed class WorkflowStep {
         val then: List<WorkflowStep>,
         val otherwise: List<WorkflowStep> = emptyList(),
     ) : WorkflowStep()
+
+    /**
+     * Runs [body] once per element of the JSON array in the variable [over], and stores what each
+     * run produced in [into].
+     *
+     * The step that turns "here are the search results" into "here is what each result's own page
+     * says", which no straight-line workflow can express: the pages to visit are not known when the
+     * workflow is written, they came out of the [ExtractRows] one step earlier. [item] is the name
+     * the body knows the current element by. An object element binds a variable per field —
+     * `{item}.title`, `{item}.url` — and `{item}` itself is the whole element; a primitive element
+     * is just `{item}`. Those are ordinary variables, so a [Template] reads them
+     * (`navigate(template("{product.url}"))`) and so does a [Condition].
+     *
+     * ### What the body sees, and what it leaves behind
+     *
+     * Each item starts from a *copy* of the variables as they stood when the step began, with the
+     * bindings added. Whatever the body extracts goes into that copy and nowhere else — items do
+     * not see each other, and the workflow after the step does not see them by name. It sees
+     * [into], a JSON array with one [FanOutResult] per item in item order: the element, the
+     * variables the body set, and the failure message if it failed. `decode<List<FanOutResult>>`
+     * reads it back.
+     *
+     * A failing item is recorded in its result and **does not fail the step**. Twenty product pages
+     * and one bot check is the normal case, and a step that threw away nineteen answers over the
+     * twentieth would be the wrong tool for the job it exists for. This mirrors [ExtractRows],
+     * where a missing column is an empty field rather than a lost row. What *does* fail the step is
+     * a workflow bug: [over] not set, or holding something other than a JSON array.
+     *
+     * ### A fan-out is a page barrier
+     *
+     * Items run on whatever lanes the engine's `LaneSource` has — several at once on a pool, one
+     * after another on a single WebView — and to make that possible without deadlock the workflow
+     * gives up its own lane before the first item starts and takes a fresh one afterwards. So the
+     * step after a `ForEach` starts on a blank page: the variables survive, the document does not.
+     * A `WaitFor` written as though the search results were still on screen will time out, and
+     * that is the honest outcome — see `LaneSource` for why the alternative is worse.
+     *
+     * The events for an item arrive wrapped in [WorkflowEvent.FanOutItem], which says which item
+     * and which lane. Body steps keep one [StepPath] however many items run them —
+     * `2.each.0` — because a path names a step in the program, not an execution of it.
+     *
+     * [limit] caps the number of items, for the same reason [ExtractRows.limit] does and one more:
+     * each item here is a page load, not a row read.
+     */
+    data class ForEach(
+        val over: String,
+        val item: String,
+        val into: String,
+        val body: List<WorkflowStep>,
+        val limit: Int = 20,
+    ) : WorkflowStep() {
+        init {
+            require(item.isNotBlank()) { "ForEach needs a name to bind each item to" }
+            require(item.all { it.isLetterOrDigit() || it == '_' || it == '-' || it == '.' }) {
+                "`$item` is not a variable name. Use letters, digits, `_`, `-` or `.`."
+            }
+            require(limit > 0) { "ForEach limit must be positive, was $limit" }
+        }
+    }
 }

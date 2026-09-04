@@ -53,7 +53,7 @@ class FramePoolQueueTest {
             val events = pool(lanes.keys.toList(), lanes).run(listOf(workflow("one"), workflow("two")), EmptyCoroutineContext).toList()
 
             for (event in events) {
-                val navigated = lanes.getValue(event.laneId).navigations
+                val navigated = lanes.getValue(checkNotNull(event.laneId) { "no lane on $event" }).navigations
                 assertTrue(
                     navigated.any { it.contains(event.workflow.id) },
                     "lane ${event.laneId} was credited with ${event.workflow.id} but never navigated there",

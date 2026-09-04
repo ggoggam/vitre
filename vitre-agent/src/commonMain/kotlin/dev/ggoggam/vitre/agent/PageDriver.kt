@@ -365,8 +365,14 @@ class PageDriver(
             .collect { event ->
                 when (event) {
                     is WorkflowEvent.Completed -> variables = event.variables
+
                     is WorkflowEvent.Failed -> failure = event.message
-                    is WorkflowEvent.StepStarted, is WorkflowEvent.StepCompleted -> Unit
+
+                    is WorkflowEvent.StepStarted,
+                    is WorkflowEvent.StepCompleted,
+                    is WorkflowEvent.LaneLeased,
+                    is WorkflowEvent.FanOutItem,
+                    -> Unit
                 }
             }
         failure?.let { throw PageDriverException(it) }

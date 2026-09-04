@@ -543,7 +543,7 @@ private fun LanesTab(runs: List<LaneRun>) {
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = run.laneId.uppercase(),
+                        text = run.laneId?.uppercase() ?: "–",
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
                         modifier =

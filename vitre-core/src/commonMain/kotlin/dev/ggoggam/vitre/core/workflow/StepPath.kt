@@ -11,8 +11,8 @@ package dev.ggoggam.vitre.core.workflow
  *
  * **A path names a step in the program, not an execution of it.** That is what makes it usable as a
  * key: a UI can hold per-step state in a `Map<StepPath, _>` and have it survive whatever the engine
- * does at runtime. When loops arrive, the iteration count will not be smuggled in here — a step
- * inside a loop body has one path however many times it runs.
+ * does at runtime. A step inside a [WorkflowStep.ForEach] body has one path — `2.each.0` — however
+ * many items run it; which item is running it rides on [WorkflowEvent.FanOutItem] instead.
  */
 data class StepPath(
     val segments: List<Segment>,
@@ -31,12 +31,14 @@ data class StepPath(
      * Which list of an enclosing step a segment indexes into.
      *
      * [Root] is the workflow's own `steps`, so it appears exactly once, on the first segment. The
-     * rest name a branch of the composite step the previous segment landed on.
+     * rest name a branch of the composite step the previous segment landed on: a side of an
+     * [WorkflowStep.If], or the body of a [WorkflowStep.ForEach].
      */
     enum class Branch {
         Root,
         Then,
         Else,
+        Each,
     }
 
     /** How deeply nested this step is. `1` for a top-level step. */
@@ -52,7 +54,8 @@ data class StepPath(
     ): StepPath = StepPath(segments + Segment(index, branch))
 
     /**
-     * `2`, `2.then.0`, `2.else.1` — what a [WorkflowEvent.Failed] message is read next to.
+     * `2`, `2.then.0`, `2.else.1`, `2.each.0` — what a [WorkflowEvent.Failed] message is read next
+     * to.
      *
      * The root segment contributes only its number, because "step `root.2`" says nothing the "2"
      * did not.
@@ -63,6 +66,7 @@ data class StepPath(
                 Branch.Root -> "${segment.index}"
                 Branch.Then -> "then.${segment.index}"
                 Branch.Else -> "else.${segment.index}"
+                Branch.Each -> "each.${segment.index}"
             }
         }
 
@@ -91,9 +95,9 @@ fun List<WorkflowStep>.stepAt(path: StepPath): WorkflowStep? {
             val parent = found
             current =
                 when {
-                    parent !is WorkflowStep.If -> return null
-                    segment.branch == StepPath.Branch.Then -> parent.then
-                    segment.branch == StepPath.Branch.Else -> parent.otherwise
+                    parent is WorkflowStep.If && segment.branch == StepPath.Branch.Then -> parent.then
+                    parent is WorkflowStep.If && segment.branch == StepPath.Branch.Else -> parent.otherwise
+                    parent is WorkflowStep.ForEach && segment.branch == StepPath.Branch.Each -> parent.body
                     else -> return null
                 }
         }
@@ -106,8 +110,8 @@ fun List<WorkflowStep>.stepAt(path: StepPath): WorkflowStep? {
  * Every step in this workflow, nested ones included, each with the path that names it.
  *
  * Depth-first in source order, so a composite step is immediately followed by its `then` steps and
- * then its `else` steps — which is the order they are written in and the order a timeline should
- * render them.
+ * then its `else` steps, or by its body — which is the order they are written in and the order a
+ * timeline should render them.
  */
 fun Workflow.walk(): List<Pair<StepPath, WorkflowStep>> = steps.walk()
 
@@ -122,9 +126,19 @@ fun List<WorkflowStep>.walk(): List<Pair<StepPath, WorkflowStep>> {
         steps.forEachIndexed { index, step ->
             val path = pathOf(index)
             collected += path to step
-            if (step is WorkflowStep.If) {
-                visit(step.then) { path.child(StepPath.Branch.Then, it) }
-                visit(step.otherwise) { path.child(StepPath.Branch.Else, it) }
+            when (step) {
+                is WorkflowStep.If -> {
+                    visit(step.then) { path.child(StepPath.Branch.Then, it) }
+                    visit(step.otherwise) { path.child(StepPath.Branch.Else, it) }
+                }
+
+                is WorkflowStep.ForEach -> {
+                    visit(step.body) { path.child(StepPath.Branch.Each, it) }
+                }
+
+                else -> {
+                    Unit
+                }
             }
         }
     }
