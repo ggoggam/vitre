@@ -1,9 +1,11 @@
 package dev.ggoggam.vitre.sample.data
 
 import dev.ggoggam.vitre.core.workflow.Workflow
+import dev.ggoggam.vitre.core.workflow.WorkflowScope
 import dev.ggoggam.vitre.core.workflow.WorkflowStep.Extract.Source
 import dev.ggoggam.vitre.core.workflow.exists
 import dev.ggoggam.vitre.core.workflow.handle
+import dev.ggoggam.vitre.core.workflow.template
 import dev.ggoggam.vitre.core.workflow.variableMatches
 import dev.ggoggam.vitre.core.workflow.workflow
 import dev.ggoggam.vitre.core.workflow.xpath
@@ -185,64 +187,143 @@ object SampleWorkflows {
      */
     val AmazonSearchResults =
         workflow(id = "amazon-search", name = "Amazon search results") {
-            navigate("https://www.amazon.com/")
-            // One locator for every layout Amazon serves. `field-keywords` is what the homepage
-            // form uses and `k` is what the results page uses, so both arms are needed — matching
-            // only `k` finds the box on a search page and nothing at all on the front page.
-            val searchBox =
-                xpath(
-                    "//input[@id='twotabsearchtextbox' or @id='nav-search-keywords' " +
-                        "or @name='k' or @name='field-keywords']",
-                )
-            waitFor(searchBox, timeoutMs = 20_000)
-            input(searchBox, text = "mechanical keyboard")
-            // Submit by walking up from *the box that was actually found* to its form, rather than
-            // by naming a field again. Repeating a locator here is what broke this workflow: the
-            // submit was hung off `//input[@name='k']`, which matches nothing on the homepage, so
-            // `Click` resolved to null and did nothing — and because a selector matching nothing is
-            // a legitimate no-op (see HandleLocatorTest), the run sailed past it and failed twenty
-            // seconds later at the `WaitFor` below, blaming search results for a button that was
-            // never pressed. Deriving one locator from the other keeps the two in step.
-            //
-            // `ancestor::form[1]` is the nearest enclosing form — there is no way to say that in
-            // CSS, and hard-coding the button's id has broken before.
-            click(xpath("${searchBox.expression}/ancestor::form[1]//*[@type='submit']"))
-            waitFor(xpath("//div[@data-component-type='s-search-result']"), timeoutMs = 25_000)
-            // Amazon renders results as you approach them, so extracting straight after the first
-            // row appears returns only the handful above the fold. Scrolling asks for the rest; the
-            // positional predicate below is what waits for them to arrive.
-            evaluateJs(script = "(function(){window.scrollTo(0,document.body.scrollHeight);return 'scrolled';})()")
-            // Sponsored rows carry `AdHolder`, and a predicate drops them here rather than
-            // downstream. Matching on the class rather than on the word "Sponsored" is deliberate:
-            // this device is served Amazon in Korean, and any locator keyed to English text
-            // silently returns nothing.
-            val organicRows =
-                xpath("//div[@data-component-type='s-search-result'][not(contains(@class,'AdHolder'))]")
-            // `(...)[6]` — the sixth match, not "a match with index 6". XPath positions are 1-based
-            // and the parentheses matter: without them the predicate applies per parent rather than
-            // to the whole node set.
-            waitFor(xpath("(${organicRows.expression})[6]"), timeoutMs = 15_000)
-            extractRows(rows = organicRows, into = "results", limit = 8) {
-                column("asin", xpath("."), from = Source.Attribute("data-asin"))
-                // Amazon truncates the visible title with a line clamp; the untruncated one is on
-                // the h2's aria-label.
-                column("title", xpath(".//h2[@aria-label]"), from = Source.Attribute("aria-label"))
-                // `.a-offscreen` is the screen-reader price — already normalised, where the visible
-                // one is split across superscript spans.
-                column("price", xpath(".//span[@class='a-offscreen']"))
-                // Same reasoning as the row predicate: `a-icon-alt` is a class, so it survives
-                // translation where `contains(@aria-label,'out of 5 stars')` does not.
-                column("rating", xpath(".//span[@class='a-icon-alt']"))
-                column("url", xpath(".//a[contains(@class,'a-link-normal')]"), from = Source.Property("href"))
-            }
-            // XPath aggregates over a node set, which is the one thing here with no CSS equivalent
-            // at all — CSS can select nodes but never count them.
-            evaluateJs(
-                script =
-                    "document.evaluate(\"count(${organicRows.expression})\",document,null,1,null).numberValue",
-                into = "organicResultCount",
-            )
+            searchAmazon(limit = 8)
         }
+
+    /**
+     * The same search, and then *into* each result: the workflow the fan-out exists for.
+     *
+     * The search page says what a product is called and what it costs; what it does not say is
+     * whether it is in stock, what buyers make of it, or what the seller chose to put in the
+     * bullet points — that is on the product's own page, and there is one per result. A straight
+     * line cannot express "go to each of these", because the addresses came out of the step
+     * before; `forEach` binds each row of `results` as `product`, and `template("{product.url}")`
+     * reads the address the search extracted.
+     *
+     * In the gallery this runs on one WebView, so the product pages load one after another and
+     * you can watch each arrive. On a pool the same workflow spreads them over every lane. Either
+     * way the search page is gone by the time the first product page loads: the fan-out gives the
+     * lane back and takes a fresh one afterwards, which is why nothing here looks at the results
+     * page again after the `forEach`.
+     *
+     * The product-page locators lean on ids Amazon has kept across layouts for years —
+     * `availability`, `feature-bullets`, the `a-price` block — because the product page, unlike
+     * the search page, has a stable skeleton under its many skins. The title is the exception, and
+     * the first run of this workflow found it: the desktop page names it `productTitle`, the
+     * mobile page a WebView is served names it `title`, and a wait on the desktop id alone timed
+     * out on all four products over a page that had loaded perfectly. Both ids are matched now.
+     * The review count moves the same way (`acrCustomerReviewText` on desktop,
+     * `acrCustomerReviewLink` on mobile), and the first `a-offscreen` price on the mobile page is
+     * an empty placeholder, so the price locator skips blanks.
+     *
+     * Every extract but the wait is tolerant: a field the page does not have comes back empty
+     * rather than failing the item. The wait is the one place an item *can* fail, and it fails when
+     * Amazon puts a bot check where the product should be, which the fan-out records against that
+     * item and carries on — four pages and one challenge is the normal outcome, not a broken run.
+     *
+     * Four items, not eight. Each is a full page load on a phone, and the demo is the shape of the
+     * thing rather than the size of it.
+     */
+    val AmazonProductDetails =
+        workflow(id = "amazon-product-details", name = "Amazon search → product pages") {
+            searchAmazon(limit = 8)
+            forEach(over = "results", item = "product", into = "details", limit = 4) {
+                navigate(template("{product.url}"))
+                val title = xpath("//*[@id='productTitle' or @id='title']")
+                waitFor(title, timeoutMs = 25_000)
+                extract(title, into = "title")
+                // The first *non-blank* price block on the page is the buy box's. `a-offscreen` is
+                // the screen-reader copy, already assembled into one string — and on the mobile
+                // page the very first one is empty, hence the `normalize-space()` predicate.
+                extract(
+                    xpath("(//span[contains(@class,'a-price')]//span[@class='a-offscreen'][normalize-space()])[1]"),
+                    into = "price",
+                )
+                // "4.6 out of 5 stars", from the same class the search rows use — a class survives
+                // the page being served in another language where the words would not.
+                extract(xpath("(//span[@class='a-icon-alt'])[1]"), into = "rating")
+                // Desktop puts the count in a span of its own; mobile wraps stars and count in one
+                // link, so there the count is the span with the `aria-label` ("1,646 Reviews").
+                extract(
+                    xpath("//*[@id='acrCustomerReviewText'] | //*[@id='acrCustomerReviewLink']//span[@aria-label]"),
+                    into = "ratingCount",
+                )
+                // The first non-blank span, not the container: the mobile wrapper also holds an
+                // inline script whose source would otherwise ride along in `textContent`.
+                extract(xpath("(//*[@id='availability']//span[normalize-space()])[1]"), into = "availability")
+                extractRows(
+                    rows = xpath("//*[@id='feature-bullets']//li[not(contains(@class,'aok-hidden'))]"),
+                    into = "bullets",
+                    limit = 5,
+                ) {
+                    column("text", xpath("."))
+                }
+            }
+        }
+
+    /**
+     * Searches Amazon for a mechanical keyboard and leaves the first [limit] organic results in
+     * `results` — the front half of both Amazon workflows, so it is written once.
+     */
+    private fun WorkflowScope.searchAmazon(limit: Int) {
+        navigate("https://www.amazon.com/")
+        // One locator for every layout Amazon serves. `field-keywords` is what the homepage
+        // form uses and `k` is what the results page uses, so both arms are needed — matching
+        // only `k` finds the box on a search page and nothing at all on the front page.
+        val searchBox =
+            xpath(
+                "//input[@id='twotabsearchtextbox' or @id='nav-search-keywords' " +
+                    "or @name='k' or @name='field-keywords']",
+            )
+        waitFor(searchBox, timeoutMs = 20_000)
+        input(searchBox, text = "mechanical keyboard")
+        // Submit by walking up from *the box that was actually found* to its form, rather than
+        // by naming a field again. Repeating a locator here is what broke this workflow: the
+        // submit was hung off `//input[@name='k']`, which matches nothing on the homepage, so
+        // `Click` resolved to null and did nothing — and because a selector matching nothing is
+        // a legitimate no-op (see HandleLocatorTest), the run sailed past it and failed twenty
+        // seconds later at the `WaitFor` below, blaming search results for a button that was
+        // never pressed. Deriving one locator from the other keeps the two in step.
+        //
+        // `ancestor::form[1]` is the nearest enclosing form — there is no way to say that in
+        // CSS, and hard-coding the button's id has broken before.
+        click(xpath("${searchBox.expression}/ancestor::form[1]//*[@type='submit']"))
+        waitFor(xpath("//div[@data-component-type='s-search-result']"), timeoutMs = 25_000)
+        // Amazon renders results as you approach them, so extracting straight after the first
+        // row appears returns only the handful above the fold. Scrolling asks for the rest; the
+        // positional predicate below is what waits for them to arrive.
+        evaluateJs(script = "(function(){window.scrollTo(0,document.body.scrollHeight);return 'scrolled';})()")
+        // Sponsored rows carry `AdHolder`, and a predicate drops them here rather than
+        // downstream. Matching on the class rather than on the word "Sponsored" is deliberate:
+        // this device is served Amazon in Korean, and any locator keyed to English text
+        // silently returns nothing.
+        val organicRows =
+            xpath("//div[@data-component-type='s-search-result'][not(contains(@class,'AdHolder'))]")
+        // `(...)[6]` — the sixth match, not "a match with index 6". XPath positions are 1-based
+        // and the parentheses matter: without them the predicate applies per parent rather than
+        // to the whole node set.
+        waitFor(xpath("(${organicRows.expression})[6]"), timeoutMs = 15_000)
+        extractRows(rows = organicRows, into = "results", limit = limit) {
+            column("asin", xpath("."), from = Source.Attribute("data-asin"))
+            // Amazon truncates the visible title with a line clamp; the untruncated one is on
+            // the h2's aria-label.
+            column("title", xpath(".//h2[@aria-label]"), from = Source.Attribute("aria-label"))
+            // `.a-offscreen` is the screen-reader price — already normalised, where the visible
+            // one is split across superscript spans.
+            column("price", xpath(".//span[@class='a-offscreen']"))
+            // Same reasoning as the row predicate: `a-icon-alt` is a class, so it survives
+            // translation where `contains(@aria-label,'out of 5 stars')` does not.
+            column("rating", xpath(".//span[@class='a-icon-alt']"))
+            column("url", xpath(".//a[contains(@class,'a-link-normal')]"), from = Source.Property("href"))
+        }
+        // XPath aggregates over a node set, which is the one thing here with no CSS equivalent
+        // at all — CSS can select nodes but never count them.
+        evaluateJs(
+            script =
+                "document.evaluate(\"count(${organicRows.expression})\",document,null,1,null).numberValue",
+            into = "organicResultCount",
+        )
+    }
 
     /**
      * Google Maps: a page that is an application rather than a document.
@@ -576,6 +657,7 @@ object SampleWorkflows {
     val all: List<Workflow> =
         listOf(
             AmazonSearchResults,
+            AmazonProductDetails,
             GoogleMapsPlaces,
             HackerNewsTopStory,
             AgentsEyeView,

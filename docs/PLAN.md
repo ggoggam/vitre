@@ -92,20 +92,26 @@ interface WebViewBridge {
   sealed type (`Exists`, `VariableEquals`, `VariableMatches`, `JsTruthy`, `Not`, `AllOf`, `AnyOf`)
   rather than a JS string, so a failure can say which part of it went wrong. The DSL calls it
   `runIf`, to keep it distinguishable from the build-time Kotlin `if` one line above.
+- `ForEach(over, item, into, body, limit)` — runs `body` once per element of the JSON array in the
+  variable `over`, with the element bound as `item` (and `item.field` for an object), and stores one
+  `FanOutResult` per item in `into`. A failing item is recorded, not fatal. Items run on lanes
+  borrowed from a `LaneSource`, and a fan-out is a page barrier: the workflow returns its lane
+  first and borrows again afterwards. `Navigate.url` and `Input.text` are `Template`s so a body can
+  say `template("{product.url}")`.
 
 Every element-addressing step takes a `Locator` — `css("…")` or `xpath("…")`. A bare string still
 means CSS, so the shorthand constructors keep the common case short. XPath earns its keep where CSS
 cannot reach: matching on visible text, walking up the tree (`ancestor::`), selecting an attribute
 as a node, positional predicates, and `count()`. Neither pierces shadow DOM.
 
-`WorkflowEngine.run(workflow): Flow<WorkflowEvent>` takes a `WebViewController` and emits `StepStarted` → `StepCompleted` per step, `Completed(variables)` at the end, or `Failed(path, message)`.
+`WorkflowEngine.run(workflow): Flow<WorkflowEvent>` takes a `LaneSource` — or a single `WebViewController`, wrapped as a source of one lane — and emits `LaneLeased(laneId)` when it borrows a lane, `StepStarted` → `StepCompleted` per step, `FanOutItem(path, index, count, laneId, event)` around every event of a `ForEach` item, and `Completed(variables)` at the end, or `Failed(path, message)`.
 
 Events carry a `StepPath` rather than a flat index, because `If` made a workflow a tree: a step
 inside a branch renders as `2.then.0`, and `Workflow.walk()` / `Workflow.stepAt(path)` map between
 the two for a caller that wants to draw one. A composite step's `StepCompleted` comes *after* its
 branch, so the stream nests the way the steps do. A path names a step in the program rather than an
-execution of it — which is what makes it usable as a map key, and what keeps loop iterations out of
-it when loops arrive.
+execution of it — which is what makes it usable as a map key, and why a `ForEach` body step keeps
+one path (`2.each.0`) however many items run it; the item index rides on `FanOutItem` instead.
 
 ## Use-case-driven TDD
 

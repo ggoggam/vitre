@@ -109,9 +109,12 @@ and returns the interactive and text-bearing elements with stable handles, as an
 rather than HTML. `Locator.Handle` makes every selector-addressed step handle-addressed for free,
 since they all already took a `Locator`. This was the single largest gap and it did come before MCP.
 
-**2. Variables do not flow between steps.** Still true for workflows, and it stopped mattering for
-agents: a tool call's result goes back to the model, which composes the next call itself. The model
-*is* the variable store. Left alone rather than built for a caller that no longer needs it.
+**2. Variables do not flow between steps.** ✅ Closed, in the two places a workflow actually needs
+it. `Template` lets `Navigate.url` and `Input.text` read variables (`template("…/{sku}")`), and
+`ForEach` runs a body once per element of an array an earlier step extracted, binding the element
+as a variable. Nothing more general was built: for agents a tool call's result goes back to the
+model, which composes the next call itself — the model *is* the variable store — and a workflow
+that needs to compute over a variable still does so in Kotlin after the run.
 
 **3. Sessions were implicit.** ✅ `WebViewSessions` in `vitre-mcp` maps a name to a controller,
 and the host registers its own. It stayed out of core, which is right: an app with one WebView never

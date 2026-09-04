@@ -1,5 +1,6 @@
 package dev.ggoggam.vitre.core.workflow
 
+import dev.ggoggam.vitre.core.frame.LaneSource
 import dev.ggoggam.vitre.core.testing.FakeWebViewController
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
@@ -30,12 +31,14 @@ class WorkflowEngineHappyPathTest {
                 listOf("https://example.com", "https://example.org"),
                 controller.navigations,
             )
-            assertEquals(5, events.size)
-            assertIs<WorkflowEvent.StepStarted>(events[0]).also { assertEquals(StepPath.root(0), it.path) }
-            assertIs<WorkflowEvent.StepCompleted>(events[1]).also { assertEquals(StepPath.root(0), it.path) }
-            assertIs<WorkflowEvent.StepStarted>(events[2]).also { assertEquals(StepPath.root(1), it.path) }
-            assertIs<WorkflowEvent.StepCompleted>(events[3]).also { assertEquals(StepPath.root(1), it.path) }
-            val completed = assertIs<WorkflowEvent.Completed>(events[4])
+            assertEquals(6, events.size)
+            // A run's first event says which lane it is on, before any step begins.
+            assertEquals(WorkflowEvent.LaneLeased(LaneSource.SOLO_LANE_ID), events[0])
+            assertIs<WorkflowEvent.StepStarted>(events[1]).also { assertEquals(StepPath.root(0), it.path) }
+            assertIs<WorkflowEvent.StepCompleted>(events[2]).also { assertEquals(StepPath.root(0), it.path) }
+            assertIs<WorkflowEvent.StepStarted>(events[3]).also { assertEquals(StepPath.root(1), it.path) }
+            assertIs<WorkflowEvent.StepCompleted>(events[4]).also { assertEquals(StepPath.root(1), it.path) }
+            val completed = assertIs<WorkflowEvent.Completed>(events[5])
             assertEquals(emptyMap(), completed.variables)
         }
 }
