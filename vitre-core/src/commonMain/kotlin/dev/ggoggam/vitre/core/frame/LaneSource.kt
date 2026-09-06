@@ -37,6 +37,9 @@ data class Lane(
  * business; what an implementation must guarantee is that a lane is with one borrower at a time.
  */
 interface LaneSource {
+    /** Maximum useful parallel page work. Custom sources default to sequential fan-out. */
+    val parallelism: Int get() = 1
+
     /**
      * Hands out a lane, suspending until one is free.
      *
