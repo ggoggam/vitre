@@ -34,6 +34,12 @@ sealed class WorkflowStep {
         constructor(selector: String, timeoutMs: Long = 10_000L) : this(css(selector), timeoutMs)
     }
 
+    /**
+     * Resolves exactly one connected, enabled target with visible layout, then calls its DOM click
+     * in the same JavaScript turn. Rejects missing, ambiguous, hidden, disabled, or inert targets.
+     * Success confirms synthetic dispatch, not trusted user input, occlusion checks, or completion
+     * of the site's resulting operation. Add a WaitFor or extraction to verify that postcondition.
+     */
     data class Click(
         val locator: Locator,
     ) : WorkflowStep() {

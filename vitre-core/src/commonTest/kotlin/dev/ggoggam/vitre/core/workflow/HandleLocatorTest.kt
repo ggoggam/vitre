@@ -13,10 +13,8 @@ import kotlin.test.fail
 /**
  * "I act on the element a snapshot showed me, and if it is not there any more I am told so."
  *
- * The second half is the point. Every expression the engine generates resolves a missing element to
- * `null` and carries on — `…?.click()`, `(…?.textContent ?? '')` — which is right for a selector
- * that might legitimately match nothing and wrong for a handle, because a handle is a claim that the
- * element was seen. Without a guard, an agent acting on a stale handle is told it succeeded.
+ * Handles retain useful stale-document diagnostics. Click also validates its resolved target in
+ * the same JavaScript turn as dispatch, for selectors as well as handles.
  */
 class HandleLocatorTest {
     /** Answers the guard with [status] and everything else with [result]. */
@@ -24,7 +22,13 @@ class HandleLocatorTest {
         status: String,
         result: String = "null",
     ) = FakeWebViewController().apply {
-        nextEvalResult = { script -> if ("isConnected" in script) "\"$status\"" else result }
+        nextEvalResult = { script ->
+            when {
+                "return 'ok'" in script -> "\"$status\""
+                "el.click();" in script -> "true"
+                else -> result
+            }
+        }
     }
 
     @Test
@@ -44,7 +48,7 @@ class HandleLocatorTest {
             val click = controller.evaluatedScripts.last()
             assertTrue("__vitre" in click, "handles live in the page, not in Kotlin: $click")
             assertTrue("\"e7\"" in click, click)
-            assertTrue(click.endsWith("?.click()"), click)
+            assertTrue("el.click();" in click, click)
         }
 
     @Test
@@ -63,9 +67,9 @@ class HandleLocatorTest {
             val failed = assertIs<WorkflowEvent.Failed>(events.last())
             assertTrue("e7" in failed.message, failed.message)
             assertTrue("snapshot" in failed.message.lowercase(), "must say how to recover: ${failed.message}")
-            // And it must not have gone ahead and clicked whatever `null?.click()` does.
+            // A rejected stale handle must not reach the click expression.
             assertTrue(
-                controller.evaluatedScripts.none { it.endsWith("?.click()") },
+                controller.evaluatedScripts.none { "el.click();" in it },
                 "the click ran anyway: ${controller.evaluatedScripts}",
             )
         }

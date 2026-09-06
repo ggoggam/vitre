@@ -13,6 +13,7 @@ import dev.ggoggam.vitre.core.workflow.PageSnapshot
 import dev.ggoggam.vitre.core.workflow.Workflow
 import dev.ggoggam.vitre.core.workflow.WorkflowEngine
 import dev.ggoggam.vitre.core.workflow.WorkflowEvent
+import dev.ggoggam.vitre.core.workflow.WorkflowFailureKind
 import dev.ggoggam.vitre.core.workflow.WorkflowStep
 import dev.ggoggam.vitre.core.workflow.describe
 import kotlinx.coroutines.CoroutineScope
@@ -33,6 +34,7 @@ import dev.ggoggam.vitre.core.workflow.xpath as xpathLocator
  */
 class PageDriverException(
     override val message: String,
+    val kind: WorkflowFailureKind = WorkflowFailureKind.Failure,
 ) : RuntimeException(message)
 
 /** Which WebView an action runs against, and under whose claim. */
@@ -188,10 +190,10 @@ class PageDriver(
     /**
      * Clicks the element [locator] names, waiting for it to appear first.
      *
-     * The wait is not only for slow pages. A click on a locator that matches nothing is a no-op that
-     * reports success — the generated expression is `…?.click()` — so without it an agent is told it
-     * pressed a button that was never there and carries on from a state that does not exist. The
-     * wait turns that into "Timeout waiting for css `#buy`".
+     * After the presence wait, the click atomically checks for one connected, enabled, visible
+     * target and dispatches a synthetic DOM click. It rejects ambiguous, disabled, hidden, or inert
+     * targets. Success confirms dispatch only; inspect the resulting page before assuming the
+     * site's operation completed. An unknown outcome must not be blindly retried.
      */
     suspend fun click(
         locator: Locator,
@@ -359,14 +361,14 @@ class PageDriver(
         steps: List<WorkflowStep>,
     ): Map<String, String> {
         var variables: Map<String, String> = emptyMap()
-        var failure: String? = null
+        var failure: WorkflowEvent.Failed? = null
         WorkflowEngine(controller, engineContext)
             .run(Workflow(id = "agent", name = "page action", steps = steps))
             .collect { event ->
                 when (event) {
                     is WorkflowEvent.Completed -> variables = event.variables
 
-                    is WorkflowEvent.Failed -> failure = event.message
+                    is WorkflowEvent.Failed -> failure = event
 
                     is WorkflowEvent.StepStarted,
                     is WorkflowEvent.StepCompleted,
@@ -375,7 +377,7 @@ class PageDriver(
                     -> Unit
                 }
             }
-        failure?.let { throw PageDriverException(it) }
+        failure?.let { throw PageDriverException(it.message, it.kind) }
         return variables
     }
 

@@ -174,11 +174,16 @@ class ScriptedShopPage : WebViewController {
                 "null"
             }
 
-            script.trimEnd().endsWith("?.click()") -> {
+            "el.click();" in script -> {
                 // The one state change that matters: pressing Search is what puts rows on the page,
                 // so a model that answers without clicking cannot have read them.
-                if (target(script)?.id == "go") searched = true
-                "null"
+                val node = target(script)
+                if (node == null) {
+                    JsonPrimitive("No element matched").toString()
+                } else {
+                    if (node.id == "go") searched = true
+                    "true"
+                }
             }
 
             ".map(function(r)" in script -> {

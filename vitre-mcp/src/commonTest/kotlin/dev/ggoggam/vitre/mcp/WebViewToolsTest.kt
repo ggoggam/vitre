@@ -126,9 +126,7 @@ class WebViewToolsTest {
                     },
                 )
 
-            // The generated click is `…?.click()`, which succeeds against nothing. An agent told it
-            // pressed checkout, when it did not, proceeds from a state that does not exist — and
-            // every later step is then wrong for a reason it cannot see.
+            // The presence wait gives slow pages a chance to render before strict click validation.
             assertTrue(result.isError, "a click that landed on nothing was reported as success")
             assertTrue("#checkout" in result.text, result.text)
         }
