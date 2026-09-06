@@ -135,8 +135,9 @@ class AndroidWebViewController(
     // ScriptResults.evaluate, shared with iOS. This platform's contribution is one raw evaluate.
     override suspend fun evaluateJs(script: String): String {
         checkOpen()
-        return scriptResults.evaluate(script, scriptTimeoutMs) { wrapped ->
+        return scriptResults.evaluate(script, scriptTimeoutMs) { wrapped, onSubmitted ->
             serializer.evaluate(scriptTimeoutMs) { cont ->
+                onSubmitted()
                 webView.evaluateJavascript(wrapped) { result -> cont.resume(result ?: "null") }
             }
         }
@@ -294,7 +295,7 @@ class AndroidWebViewController(
         ) {
             // A new document means the old page's unread messages can never be answered and would
             // only mislead the next step that goes looking for one — and its promises can never
-            // settle, so armed waits fail now rather than sitting out their timeout.
+            // settle, so pending waits fail now rather than sitting out their timeout.
             inbox.clear()
             scriptResults.clear()
             serializer.started()

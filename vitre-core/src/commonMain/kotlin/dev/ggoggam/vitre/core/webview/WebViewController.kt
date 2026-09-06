@@ -75,8 +75,12 @@ interface WebViewController {
      * flag is how the two platforms once came to disagree about what the same workflow returns.
      *
      * [script] must be an expression; wrap statements in an IIFE.
+     * Each call is submitted at most once. A missing result does not establish whether a mutation
+     * took effect; inspect the page before retrying. Cancellation stops waiting, not JavaScript
+     * already running in the renderer.
      *
      * @throws ScriptTimeoutException if the result does not arrive in time.
+     * @throws ScriptOutcomeUnknownException if navigation or timeout prevents observing a result.
      * @throws ScriptFailedException if the script's promise rejected.
      */
     suspend fun evaluateJs(script: String): String
@@ -213,9 +217,19 @@ class PageLoadException(
  * click that navigated — because both platforms drop the pending callback in that case instead of
  * reporting an error.
  */
-class ScriptTimeoutException(
+open class ScriptTimeoutException(
     message: String,
 ) : RuntimeException(message)
+
+/**
+ * A submitted script's outcome could not be observed. Its side effects may already have happened
+ * or may still finish in the renderer. Inspect state before retrying a mutation.
+ *
+ * Extends [ScriptTimeoutException] so existing read-only polling can recover from a lost document.
+ */
+class ScriptOutcomeUnknownException(
+    message: String,
+) : ScriptTimeoutException(message)
 
 /**
  * A script ran and its result was an error rather than a value.
