@@ -17,17 +17,40 @@ import kotlin.test.fail
  * the same JavaScript turn as dispatch, for selectors as well as handles.
  */
 class HandleLocatorTest {
-    /** Answers the guard with [status] and everything else with [result]. */
+    @Test
+    fun atomic_handle_results_preserve_extracted_strings() =
+        runTest {
+            val controller = controllerFor("ok", "\"line one\\n\\\"line two\\\"\"")
+            val workflow = Workflow("read", "read", listOf(WorkflowStep.Extract(handle("opaque:ref"), into = "value")))
+            val result = WorkflowEngine(controller, EmptyCoroutineContext).run(workflow).toList().last()
+            assertEquals("line one\n\"line two\"", assertIs<WorkflowEvent.Completed>(result).variables["value"])
+            assertEquals(1, controller.evaluatedScripts.size)
+        }
+
+    @Test
+    fun wait_for_rechecks_handle_validity_on_every_poll() =
+        runTest {
+            val controller =
+                FakeWebViewController().apply {
+                    var polls = 0
+                    nextEvalResult = {
+                        if (polls++ == 0) """{"status":"ok","value":false}""" else """{"status":"detached"}"""
+                    }
+                }
+            val workflow = Workflow("wait", "wait", listOf(WorkflowStep.WaitFor(handle("opaque:ref"))))
+            val result = WorkflowEngine(controller, EmptyCoroutineContext).run(workflow).toList().last()
+            assertTrue("removed" in assertIs<WorkflowEvent.Failed>(result).message)
+            assertEquals(2, controller.evaluatedScripts.size)
+        }
+
+    /** Answers the atomic guard/action envelope with [status] and [result]. */
     private fun controllerFor(
         status: String,
         result: String = "null",
     ) = FakeWebViewController().apply {
         nextEvalResult = { script ->
-            when {
-                "return 'ok'" in script -> "\"$status\""
-                "el.click();" in script -> "true"
-                else -> result
-            }
+            val value = if ("el.click();" in script) "true" else result
+            if ("isConnected" in script) "{\"status\":\"$status\",\"value\":$value}" else value
         }
     }
 
@@ -49,6 +72,7 @@ class HandleLocatorTest {
             assertTrue("__vitre" in click, "handles live in the page, not in Kotlin: $click")
             assertTrue("\"e7\"" in click, click)
             assertTrue("el.click();" in click, click)
+            assertEquals(1, controller.evaluatedScripts.size, "validation and action must be atomic")
         }
 
     @Test
@@ -67,11 +91,7 @@ class HandleLocatorTest {
             val failed = assertIs<WorkflowEvent.Failed>(events.last())
             assertTrue("e7" in failed.message, failed.message)
             assertTrue("snapshot" in failed.message.lowercase(), "must say how to recover: ${failed.message}")
-            // A rejected stale handle must not reach the click expression.
-            assertTrue(
-                controller.evaluatedScripts.none { "el.click();" in it },
-                "the click ran anyway: ${controller.evaluatedScripts}",
-            )
+            assertEquals(1, controller.evaluatedScripts.size)
         }
 
     @Test

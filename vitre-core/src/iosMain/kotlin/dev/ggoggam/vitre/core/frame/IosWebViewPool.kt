@@ -98,6 +98,20 @@ class IosWebViewPool(
      */
     suspend fun open() = pool.resetAll()
 
+    private var disposed = false
+
+    /** Releases controllers and script handlers. Call on the main thread when the host leaves. */
+    fun dispose() {
+        if (disposed) return
+        disposed = true
+        pool.close()
+        controllers.values.forEach { it.close() }
+        webViews.forEach {
+            it.configuration.userContentController.removeScriptMessageHandlerForName(ScriptedTap.HANDLER)
+            it.stopLoading()
+        }
+    }
+
     private fun newWebView(): WKWebView {
         val configuration = WKWebViewConfiguration()
         // The shared persistent store rather than a per-lane ephemeral one, which matches the

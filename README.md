@@ -334,6 +334,24 @@ The sample's Price scout does exactly this: four synthetic shops at four distinc
 and ranked by delivered price, which for most of the catalogue is a different shop from the cheapest
 sticker price.
 
+For work that must survive an observer disconnecting, submit it once to a host-owned
+[`WorkflowQueue`](docs/WORKFLOW-JOBS.md). Its job handles expose hot state: another collector
+observes the same execution. Admission is bounded, and deadlines include time spent waiting.
+
+```kotlin
+val queue = WorkflowQueue(hostScope, readyPool, capacity = 32)
+val job = queue.submit(shop.workflow(query), timeoutMs = 60_000)
+hostJobs[job.id] = job // retain the handle for your UI or agent session
+
+when (val state = job.await()) {
+    is WorkflowJobState.Completed -> merge(state.result.variables["results"])
+    is WorkflowJobState.Failed -> log(state.message)
+    is WorkflowJobState.Cancelled -> log("cancelled: ${state.reason}")
+    else -> Unit
+}
+// When the host shuts down: queue.closeAndJoin()
+```
+
 ### 7. Offline, deterministic page tests
 
 A `RequestHandler` answers requests from memory, so a test drives a real WebView against a real
@@ -376,7 +394,16 @@ textbox value="typed by handle" [ref=e3]
 button "Send pong to native" [ref=e4]
 ```
 
-From there the agent names no selectors at all:
+Refs in this example are abbreviated. Actual refs include a document namespace: copy them verbatim
+from the snapshot and treat them as opaque. Passwords, one-time codes and card autocomplete values
+are redacted; other form values are bounded. Hosts can configure additional subtree redaction using
+`SnapshotPolicy` on `WorkflowEngine`, `PageDriver`, or `McpServer`.
+
+Hosts can disable tool operations or suspend them for user approval with `PageAccessPolicy`.
+MCP and Koog expose `capabilities` to report enabled operations and limitations. See
+[host action authorization](docs/ACTION-POLICY.md) for examples and the enforcement boundary.
+
+From there the agent uses the returned refs (shown abbreviated below):
 
 ```kotlin
 snapshot(into = "page")

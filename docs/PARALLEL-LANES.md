@@ -107,6 +107,23 @@ swap gets trimmed. Either way, fewer lanes costs wall-clock and nothing else,
 because `FramePool.run` queues: six workflows in a pool of two run three deep rather than losing
 four of them.
 
+`run` admits at most one top-level workflow per configured lane. Remaining list entries do not
+allocate coroutines until admitted. Each engine also bounds extra fan-out workers across nested
+items; the current coroutine processes items inline when that budget is exhausted. Parents still
+release their lane first, so nested fan-out remains safe with one lane. The submitted list and final
+result arrays still occupy memory proportional to the number of items; these limits bound runnable
+work and variable copies, not the caller's input or result size.
+
+`pool.state` reports leased and unavailable lane IDs and whether the pool is closed. Cancellation
+returns lanes, including cancellation during channel handoff. A lane that fails its placeholder
+load is quarantined; recreate the platform pool to replace it. If no healthy lane remains, waiting
+borrowers fail rather than hanging. `close()` stops admission and wakes waiters while allowing
+existing borrowers to return their lanes. Platform hosts additionally dispose their WebViews and
+handlers when removed. Cancel ongoing workflow collection when tearing down its host.
+
+`resetAll()` reserves lanes through the same acquisition path, and concurrent resets serialize.
+It waits for active borrowers instead of replacing their documents underneath them.
+
 ## Lanes are borrowed, and a fan-out is a page barrier
 
 A workflow does not own a lane for its run. The pool is a `LaneSource`, and a `WorkflowEngine`

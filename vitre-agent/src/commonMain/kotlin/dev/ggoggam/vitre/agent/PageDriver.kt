@@ -10,6 +10,7 @@ import dev.ggoggam.vitre.agent.session.WebViewSessions
 import dev.ggoggam.vitre.core.webview.WebViewController
 import dev.ggoggam.vitre.core.workflow.Locator
 import dev.ggoggam.vitre.core.workflow.PageSnapshot
+import dev.ggoggam.vitre.core.workflow.SnapshotPolicy
 import dev.ggoggam.vitre.core.workflow.Workflow
 import dev.ggoggam.vitre.core.workflow.WorkflowEngine
 import dev.ggoggam.vitre.core.workflow.WorkflowEvent
@@ -97,6 +98,9 @@ class PageDriver(
      * into a race.
      */
     private val engineContext: CoroutineContext = Dispatchers.Default,
+    /** Host-owned snapshot redaction; shared by MCP and Koog when they share this driver. */
+    private val snapshotPolicy: SnapshotPolicy = SnapshotPolicy(),
+    private val accessPolicy: PageAccessPolicy = PageAccessPolicy(),
 ) {
     /**
      * Builds a driver with a lease registry of its own, for a host with only one adapter.
@@ -114,12 +118,29 @@ class PageDriver(
         sessions: WebViewSessions,
         scope: CoroutineScope,
         engineContext: CoroutineContext = Dispatchers.Default,
-    ) : this(sessions, SessionLeases(scope), engineContext)
+        snapshotPolicy: SnapshotPolicy = SnapshotPolicy(),
+        accessPolicy: PageAccessPolicy = PageAccessPolicy(),
+    ) : this(sessions, SessionLeases(scope), engineContext, snapshotPolicy, accessPolicy)
 
     // ── Sessions and leases ────────────────────────────────────────────────────────────────────
 
     /** Every registered WebView, in registration order. */
     fun listSessions(): List<WebViewSession> = sessions.all()
+
+    /** Static availability. Metadata discovery and lease release are always available. */
+    fun isActionEnabled(kind: PageActionKind): Boolean = kind in accessPolicy.enabledActions
+
+    fun capabilities(target: PageTarget = PageTarget.Default): PageCapabilities {
+        val session = sessions.resolve(target.session)
+        val controller = target.lease?.let { leases.require(it, session.id).controller } ?: session.controller
+        return PageCapabilities(
+            sessionId = session.id,
+            operations =
+                listOf("list_sessions", "capabilities", "release_lease") +
+                    PageActionKind.entries.filter(::isActionEnabled).map { it.toolName },
+            nativeCookieStore = controller.cookies != null,
+        )
+    }
 
     /**
      * Takes a WebView for several calls in a row.
@@ -137,7 +158,16 @@ class PageDriver(
         ttlMs: Long = DEFAULT_LEASE_TTL_MS,
     ): LeaseGrant {
         val session = sessions.resolve(sessionId)
-        val lease = leases.acquire(session, ttlMs = ttlMs)
+        val boundedTtl = ttlMs.coerceIn(MIN_LEASE_TTL_MS, MAX_LEASE_TTL_MS)
+        authorize(PageActionRequest(session.id, session.controller, null, PageActionKind.AcquireLease, leaseTtlMs = boundedTtl))
+        requireSameRegistration(session)
+        val lease = leases.acquire(session, ttlMs = boundedTtl)
+        try {
+            requireSameRegistration(session)
+        } catch (failure: Throwable) {
+            leases.release(lease.id)
+            throw failure
+        }
         return LeaseGrant(id = lease.id, sessionId = session.id, ttlMs = lease.ttlMs)
     }
 
@@ -287,7 +317,7 @@ class PageDriver(
         }
         columns.forEach { (name, column) -> validateColumn(name, column.locator) }
         return target.runStep(
-            WorkflowStep.ExtractRows(rows, columns, OUT, limit.coerceIn(1, MAX_ROW_LIMIT)),
+            WorkflowStep.ExtractRows(rows, columns.toMap(), OUT, limit.coerceIn(1, MAX_ROW_LIMIT)),
             expecting = OUT,
         )
     }
@@ -338,6 +368,9 @@ class PageDriver(
     ): String {
         val resolved = sessions.resolve(session)
         val held = lease?.let { leases.require(it, resolved.id) }
+        val action = steps.firstOrNull { it is WorkflowStep.Navigate } ?: steps.last()
+        authorize(PageActionRequest(resolved.id, held?.controller ?: resolved.controller, lease, action.kind(), action))
+        requireSameRegistration(resolved)
         val variables = execute(resolved, held, steps)
         return expecting?.let { variables[it] ?: "" } ?: ""
     }
@@ -352,9 +385,61 @@ class PageDriver(
         // mid-lease, and running on the new one would bypass the claim. An unleased call uses the
         // current controller, which is what it should.
         val controller = lease?.controller ?: session.controller
-        val run: suspend () -> Map<String, String> = { runWorkflow(controller, steps) }
-        return if (lease != null) lease.use(run) else run()
+        val run: suspend () -> Map<String, String> = {
+            requireSameRegistration(session)
+            runWorkflow(controller, steps)
+        }
+        return when {
+            lease != null -> lease.use(run)
+
+            // Navigation/title and wait/action pairs need a shared document. A standalone
+            // passive wait or arbitrary expression must retain the controller's own ordering:
+            // its completion may depend on another caller interacting with this same page.
+            steps.size > 1 -> controller.exclusively { run() }
+
+            else -> run()
+        }
     }
+
+    private fun requireSameRegistration(session: WebViewSession) {
+        if (sessions.sessions.value[session.id] !== session) {
+            throw PageDriverException("Session `${session.id}` changed while the action was pending. Review the new session and retry.")
+        }
+    }
+
+    private suspend fun authorize(request: PageActionRequest) {
+        if (!isActionEnabled(request.kind)) {
+            throw PageDriverException("The host disabled `${request.kind.toolName}` for this driver.")
+        }
+        val decision =
+            try {
+                accessPolicy.authorizer.authorize(request)
+            } catch (cancelled: kotlin.coroutines.cancellation.CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                throw PageDriverException(
+                    "Host authorization failed for `${request.kind.toolName}`: ${failure.message ?: "no reason provided"}",
+                )
+            }
+        if (decision is PageActionDecision.Deny) {
+            throw PageDriverException("Host denied `${request.kind.toolName}`: ${decision.reason.ifBlank { "approval was not granted" }}")
+        }
+    }
+
+    private fun WorkflowStep.kind(): PageActionKind =
+        when (this) {
+            is WorkflowStep.Snapshot -> PageActionKind.Snapshot
+            is WorkflowStep.Navigate -> PageActionKind.Navigate
+            is WorkflowStep.Click -> PageActionKind.Click
+            is WorkflowStep.Input -> PageActionKind.Input
+            is WorkflowStep.WaitFor -> PageActionKind.WaitFor
+            is WorkflowStep.Extract -> PageActionKind.Extract
+            is WorkflowStep.ExtractRows -> PageActionKind.ExtractRows
+            is WorkflowStep.EvaluateJs -> PageActionKind.Evaluate
+            is WorkflowStep.PostMessage -> PageActionKind.PostMessage
+            is WorkflowStep.AwaitMessage -> PageActionKind.AwaitMessage
+            else -> error("PageDriver does not expose ${this::class.simpleName}")
+        }
 
     private suspend fun runWorkflow(
         controller: WebViewController,
@@ -362,7 +447,7 @@ class PageDriver(
     ): Map<String, String> {
         var variables: Map<String, String> = emptyMap()
         var failure: WorkflowEvent.Failed? = null
-        WorkflowEngine(controller, engineContext)
+        WorkflowEngine(controller, engineContext, snapshotPolicy)
             .run(Workflow(id = "agent", name = "page action", steps = steps))
             .collect { event ->
                 when (event) {

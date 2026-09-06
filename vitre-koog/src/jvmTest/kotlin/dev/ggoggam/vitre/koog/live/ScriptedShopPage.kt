@@ -6,6 +6,7 @@ import dev.ggoggam.vitre.core.bridge.WebViewInbox
 import dev.ggoggam.vitre.core.concurrent.WebViewOrdering
 import dev.ggoggam.vitre.core.webview.ExclusiveAccess
 import dev.ggoggam.vitre.core.webview.WebViewController
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
@@ -150,11 +151,19 @@ class ScriptedShopPage : WebViewController {
                 JsonPrimitive(TITLE).toString()
             }
 
-            // The handle guard, which runs before every ref-addressed action. Nothing here ever
-            // detaches — the page mutates in place — so a known ref is always 'ok'.
+            // Handle validation and the action now share one evaluation envelope.
             "return 'no-snapshot'" in script -> {
                 val ref = handleRef.find(script)?.groupValues?.get(1)
-                JsonPrimitive(if (ref != null && byRef(ref) != null) "ok" else "unknown").toString()
+                val valid = ref != null && byRef(ref) != null
+                buildJsonObject {
+                    put("status", if (valid) "ok" else "unknown")
+                    if (valid) {
+                        val expression = script.substringAfterLast("return {status:'ok',value:(").removeSuffix(")};})()")
+                        put("value", Json.parseToJsonElement(answer(expression)))
+                    } else if (ref != null) {
+                        put("handle", ref)
+                    }
+                }.toString()
             }
 
             // Presence, as `wait_for` and every action's implicit wait ask it.

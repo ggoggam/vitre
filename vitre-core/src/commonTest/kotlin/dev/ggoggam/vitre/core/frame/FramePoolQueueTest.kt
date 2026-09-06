@@ -11,9 +11,11 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -31,6 +33,46 @@ class FramePoolQueueTest {
         laneIds: List<String>,
         lanes: Map<String, WebViewController>,
     ) = FramePool(laneIds = laneIds, tap = null, lanes = lanes)
+
+    @Test
+    fun `cancelling a receiver during handoff returns its lane`() =
+        runTest {
+            val pool = pool(listOf("a"), mapOf("a" to FakeWebViewController()))
+            val held = pool.acquire("first")
+            val waiting = launch { pool.withLane("cancelled") { error("must not run") } }
+            runCurrent()
+
+            // The channel hands the lane to the suspended receiver, but it is cancelled before
+            // its continuation runs. No successful acquire exists for withLane to release.
+            pool.release(held)
+            waiting.cancel()
+            waiting.join()
+
+            val recovered = withTimeoutOrNull(100) { pool.acquire("next") }
+            assertNotNull(recovered, "the cancelled receiver permanently consumed the only lane")
+            pool.release(recovered)
+        }
+
+    @Test
+    fun `a cancelled handoff can pass its lane to another waiting borrower`() =
+        runTest {
+            val pool = pool(listOf("a"), mapOf("a" to FakeWebViewController()))
+            val held = pool.acquire("first")
+            val cancelled = launch { pool.withLane("cancelled") { error("must not run") } }
+            var nextRan = false
+            val next = launch { pool.withLane("next") { nextRan = true } }
+            runCurrent()
+            pool.release(held)
+            cancelled.cancel()
+            cancelled.join()
+            runCurrent()
+            assertTrue(nextRan, "the next queued borrower did not receive the recovered lane")
+            next.join()
+
+            val recovered = assertNotNull(withTimeoutOrNull(100) { pool.acquire("last") })
+            assertEquals(null, withTimeoutOrNull(100) { pool.acquire("duplicate") })
+            pool.release(recovered)
+        }
 
     @Test
     fun `runs every workflow even when there are more of them than lanes`() =
