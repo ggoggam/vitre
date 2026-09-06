@@ -367,7 +367,12 @@ textbox value="typed by handle" [ref=e3]
 button "Send pong to native" [ref=e4]
 ```
 
-From there the agent names no selectors at all:
+Refs in this example are abbreviated. Actual refs include a document namespace: copy them verbatim
+from the snapshot and treat them as opaque. Passwords, one-time codes and card autocomplete values
+are redacted; other form values are bounded. Hosts can configure additional subtree redaction using
+`SnapshotPolicy` on `WorkflowEngine`, `PageDriver`, or `McpServer`.
+
+From there the agent uses the returned refs (shown abbreviated below):
 
 ```kotlin
 snapshot(into = "page")

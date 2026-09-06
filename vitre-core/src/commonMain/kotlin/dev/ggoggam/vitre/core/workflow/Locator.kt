@@ -40,6 +40,8 @@ sealed interface Locator {
      * document they are never recycled: a second snapshot mints new numbers rather than reassigning
      * old ones, because an agent holding `e3` across two snapshots must get the element it saw or an
      * error, never a different element that happens to sit where the old one did.
+     * The short refs above are illustrative: real refs include a document namespace. Copy the
+     * entire opaque string from the snapshot; never construct or parse one.
      *
      * A handle is absolute, so unlike the other two it ignores the scope it is resolved in — as a
      * [WorkflowStep.ExtractRows] column it reads the same element for every row, which is almost

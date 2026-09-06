@@ -32,11 +32,16 @@ import kotlinx.coroutines.withContext
 class WebViewOrdering {
     private val order = Mutex()
 
+    // An exclusive claim excludes outsiders, but its context can be inherited by multiple child
+    // coroutines (or attached by ExclusiveAccess.use). Those operations still share one WebView.
+    private val operations = Mutex()
+
     /**
      * Runs [block] with the WebView to itself for the duration of that one operation.
      *
-     * A caller already inside an [exclusively] block over *this* ordering passes straight through,
-     * since it holds the lock already and `Mutex` is not reentrant.
+     * A caller already inside an [exclusively] block over *this* ordering skips the ownership lock,
+     * but still queues with other operations made under that claim. [block] is one primitive
+     * operation and must not recursively call [ordered] on the same WebView.
      *
      * The check is per-owner rather than a boolean, so holding session A's claim grants nothing over
      * session B — a caller inside A's exclusive block still queues for B like anyone else. The flip
@@ -45,7 +50,11 @@ class WebViewOrdering {
      */
     suspend fun <T> ordered(block: suspend () -> T): T {
         val lease = currentCoroutineContext()[WebViewLease]
-        return if (lease != null && lease.holds(order::holdsLock)) block() else order.withLock { block() }
+        return if (lease != null && lease.holds(order::holdsLock)) {
+            operations.withLock { block() }
+        } else {
+            order.withLock { operations.withLock { block() } }
+        }
     }
 
     /**

@@ -15,9 +15,9 @@ import kotlinx.coroutines.withContext
  * Most callers never see it: work done inside the `exclusively` block is already covered, because
  * the claim rides the coroutine context. [use] exists for the case the context cannot reach — an
  * MCP client holding a lease across several tool calls, each arriving on a coroutine of its own,
- * where the claim has to be re-attached by hand. Concurrent [use] calls are *not* serialised against
- * each other; they all bypass the same lock, so a holder running several at once must order them
- * itself.
+ * where the claim has to be re-attached by hand. Individual controller operations remain ordered
+ * across concurrent [use] calls. Their multi-operation sequences can interleave, so callers needing
+ * an indivisible sequence must serialize those calls and keep the claim alive until they finish.
  */
 class ExclusiveAccess internal constructor(
     private val lease: WebViewLease,
