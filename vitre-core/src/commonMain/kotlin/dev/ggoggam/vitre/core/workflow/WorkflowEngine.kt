@@ -8,6 +8,7 @@ import dev.ggoggam.vitre.core.frame.LaneSource
 import dev.ggoggam.vitre.core.webview.ScriptTimeoutException
 import dev.ggoggam.vitre.core.webview.WebViewController
 import dev.ggoggam.vitre.core.webview.evaluate
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -15,6 +16,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -52,6 +56,10 @@ class WorkflowEngine(
     private val context: CoroutineContext = Dispatchers.Default,
     private val snapshotPolicy: SnapshotPolicy = SnapshotPolicy(),
 ) {
+    // Extra fan-out workers share one budget across recursive items. The current coroutine always
+    // processes items too: waiting parents therefore never consume all permits their children need.
+    private val fanOutWorkers = if (lanes.parallelism > 1) Semaphore(lanes.parallelism - 1) else null
+
     /** Runs everything on [controller], one segment at a time. See [LaneSource.of]. */
     constructor(
         controller: WebViewController,
@@ -258,8 +266,13 @@ class WorkflowEngine(
 
         val results = arrayOfNulls<FanOutResult>(taken.size)
         coroutineScope {
-            taken.forEachIndexed { index, item ->
-                launch {
+            val admission = Mutex()
+            var next = 0
+
+            suspend fun work() {
+                while (true) {
+                    val index = admission.withLock { if (next < taken.size) next++ else null } ?: break
+                    val item = taken[index]
                     val bound = variables.toMutableMap().apply { bindItem(step.item, item) }
                     val start = bound.toMap()
                     // The item's emitter names the lane its holder is on, and its holder reports
@@ -286,6 +299,19 @@ class WorkflowEngine(
                         )
                 }
             }
+            repeat(minOf(lanes.parallelism - 1, taken.size.coerceAtLeast(1) - 1).coerceAtLeast(0)) {
+                if (fanOutWorkers?.tryAcquire() == true) {
+                    // Enter finally before dispatch: cancellation must not leak a reserved permit.
+                    launch(start = CoroutineStart.UNDISPATCHED) {
+                        try {
+                            work()
+                        } finally {
+                            fanOutWorkers.release()
+                        }
+                    }
+                }
+            }
+            work()
         }
 
         variables[step.into] = WorkflowJson.encodeToString(ListSerializer(FanOutResult.serializer()), results.map { requireNotNull(it) })
