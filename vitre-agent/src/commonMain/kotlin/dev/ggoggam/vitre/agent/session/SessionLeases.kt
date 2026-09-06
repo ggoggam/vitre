@@ -5,11 +5,16 @@ import dev.ggoggam.vitre.core.webview.WebViewController
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.random.Random
 
@@ -23,7 +28,7 @@ const val DEFAULT_LEASE_ACQUIRE_TIMEOUT_MS: Long = 15_000L
 const val MIN_LEASE_TTL_MS: Long = 1_000L
 
 /**
- * The longest a caller may hold a WebView.
+ * The longest a lease may admit calls before revocation starts.
  *
  * Enforced here rather than only in [PageDriver.acquireLease] because the whole point of the TTL is
  * to defend the page against a caller that stops, and a bound that only one of the two entry points
@@ -71,19 +76,36 @@ class SessionLease internal constructor(
      */
     private val gate = Mutex()
 
-    internal suspend fun <T> use(block: suspend () -> T): T =
-        gate.withLock {
-            // Checked here as well as in the registry because releasing only *asks* the holder to
-            // let go: the coroutine actually holding the lock resumes later, so between the two
-            // there is a window in which this object still looks usable and the claim behind it is
-            // already gone. Acting in that window would bypass the WebView's lock while holding
-            // nothing.
-            if (released.isCompleted) throw LeaseException("Lease `$id` has been released.")
-            granted.await().use(block)
+    internal suspend fun <T> use(block: suspend () -> T): T {
+        if (released.isCompleted) throw LeaseException("Lease `$id` has been released.")
+        return coroutineScope {
+            // Cancel this call's scope, not its caller or the host. Registration also handles a
+            // release racing admission: an already-completed deferred invokes it immediately.
+            val call = currentCoroutineContext().job
+            val revocation =
+                released.invokeOnCompletion {
+                    call.cancel(CancellationException("Lease `$id` has been released."))
+                }
+            try {
+                gate.withLock {
+                    if (released.isCompleted) throw LeaseException("Lease `$id` has been released.")
+                    granted.await().use(block)
+                }
+            } finally {
+                revocation.dispose()
+            }
         }
+    }
 
     internal fun release() {
         released.complete(Unit)
+    }
+
+    internal suspend fun releaseAndAwait() {
+        release()
+        // Even cancellation cleanup may touch the page. Keep ownership until that cleanup has
+        // completed; a TTL bounds admission, not how quickly uncooperative code can be stopped.
+        withContext(NonCancellable) { gate.withLock { } }
     }
 }
 
@@ -109,7 +131,9 @@ class SessionLeases(
     fun isActive(id: String): Boolean = id in state.value
 
     /**
-     * Takes the WebView and holds it until released or [ttlMs] elapses.
+     * Takes the WebView and revokes its lease when released or [ttlMs] elapses. Revocation cancels
+     * active calls and rejects new ones. Ownership is released only after active calls finish their
+     * cancellation cleanup, so uncooperative code can extend the time the WebView remains held.
      *
      * [ttlMs] is clamped into [MIN_LEASE_TTL_MS]..[MAX_LEASE_TTL_MS]: an unbounded lease lets a
      * caller that has stopped wedge the page for days, and `0` would return one already dead.
@@ -135,8 +159,13 @@ class SessionLeases(
             scope.launch {
                 try {
                     session.controller.exclusively { access ->
-                        granted.complete(access)
-                        withTimeoutOrNull(clamped) { released.await() }
+                        try {
+                            granted.complete(access)
+                            withTimeoutOrNull(clamped) { released.await() }
+                        } finally {
+                            state.update { it - id }
+                            lease.releaseAndAwait()
+                        }
                     }
                 } catch (cancellation: CancellationException) {
                     throw cancellation
@@ -152,6 +181,9 @@ class SessionLeases(
                 }
             }
         holder.invokeOnCompletion { cause ->
+            // A launch into an already-cancelled host scope never runs its body or its finally.
+            state.update { it - id }
+            lease.release()
             // Only has an effect if the lock was never handed over; completing an already-completed
             // deferred is a no-op, so a normal release does not look like a failure here.
             granted.completeExceptionally(
@@ -210,6 +242,7 @@ class SessionLeases(
         return lease
     }
 
+    /** Starts revocation immediately; the holder unlocks after active calls finish cleanup. */
     fun release(id: String): Boolean {
         val lease = state.value[id] ?: return false
         // Deregistered here rather than left to the holder's own cleanup, which runs a coroutine
