@@ -216,4 +216,50 @@ class WorkflowQueueTest {
                 queue.closeAndJoin()
             }
         }
+
+    @Test
+    fun `closing the pool settles lane waiters and jobs behind them`() =
+        runTest {
+            val lane = FakeWebViewController()
+            val pool = pool(lane)
+            val externalLease = pool.acquire("external owner")
+            val queue = WorkflowQueue(this, pool, parallelism = 1, context = EmptyCoroutineContext)
+            try {
+                val laneWaiter = queue.submit(workflow("lane-waiter"))
+                val queued = queue.submit(workflow("queued"))
+                runCurrent()
+                assertIs<WorkflowJobState.Running>(laneWaiter.state.value)
+                assertIs<WorkflowJobState.Queued>(queued.state.value)
+                pool.close()
+                assertTrue(assertIs<WorkflowJobState.Failed>(laneWaiter.await()).message.contains("closed"))
+                assertTrue(assertIs<WorkflowJobState.Failed>(queued.await()).message.contains("closed"))
+                assertTrue(lane.navigations.isEmpty())
+                assertFalse(lane.closed)
+            } finally {
+                pool.release(externalLease)
+                queue.closeAndJoin()
+            }
+        }
+
+    @Test
+    fun `an unavailable pool fails each job without retrying the quarantined lane`() =
+        runTest {
+            val lane =
+                FakeWebViewController().apply {
+                    onNavigate = { url -> if (url == "about:blank") throw PageLoadException("cannot initialize") }
+                }
+            val pool = pool(lane)
+            val queue = WorkflowQueue(this, pool, context = EmptyCoroutineContext)
+            try {
+                val first = queue.submit(workflow("first"))
+                val next = queue.submit(workflow("next"))
+                assertTrue(assertIs<WorkflowJobState.Failed>(first.await()).message.contains("cannot initialize"))
+                assertTrue(assertIs<WorkflowJobState.Failed>(next.await()).message.contains("unavailable"))
+                assertEquals(setOf("a"), pool.state.value.unavailableLaneIds)
+                assertEquals(1, lane.loadedHtml.size)
+                assertTrue(lane.navigations.isEmpty())
+            } finally {
+                queue.closeAndJoin()
+            }
+        }
 }

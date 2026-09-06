@@ -60,6 +60,11 @@ caller has no effect on the submitted job.
 `jobs.closeAndJoin()` also waits for cancellation cleanup. Cancelling `hostScope` cancels the queue
 and all its jobs. The queue does not close the pool's WebViews; the platform host still owns them.
 
+Closing the underlying `FramePool` wakes jobs waiting for a lane with a failure. Jobs still waiting
+for a top-level execution slot fail when admitted; existing lane owners may finish according to
+the pool's close contract. Use `jobs.close()` when every accepted job must be cancelled immediately.
+A pool with every lane quarantined similarly fails subsequent jobs without retrying broken lanes.
+
 The IDs and states are process-local. Keep handles in the host for lookup by ID; the queue retains
 no completed-job registry. Submitting the same workflow again creates a new ID and executes it
 again: job IDs are not idempotency keys. There is no persistence, automatic retry, durable
