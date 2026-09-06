@@ -375,9 +375,10 @@ a lane that loads and a lane that does not.
 the page, and every platform drops a pending script callback when the document it was submitted
 against goes away — without ever invoking it. The reply is not late, it is never coming, and the
 step would otherwise wait out its whole script timeout and report a page that is visibly fine as a
-slow one. `WebViewSerializer.evaluate` therefore resubmits **once**, and only when it sees a new
-document commit rather than a result arrive. Once, because a second loss is a genuine fault and
-should look like one.
+slow one. `WebViewSerializer.evaluate` watches for the replacement document and reports
+`ScriptOutcomeUnknownException` when no answer arrives. It submits at most once: the original
+script may already have submitted the form, and replaying it could repeat that action. Callers
+should inspect the page before retrying a mutation; read-only `WaitFor` polling can retry safely.
 
 **4. `evaluateJavascript` never waits for a promise.** It hands back whatever the expression
 evaluated to, and a `Promise` serialises as `{}` — so an asynchronous step returns an empty object
@@ -483,10 +484,9 @@ the wait for the incoming document, and `'unsafe-eval'` spliced into `script-src
 so a strict-CSP site would load, answer the handshake, and then fail *every step* with a CSP
 violation.
 
-One piece of it was kept rather than deleted. The lane controller resubmitted a command once when
-the page navigated out from under it, and that trap is not about iframes at all — it is about a
-platform dropping a script callback when the document goes. It now lives in `WebViewSerializer`,
-where every controller gets it, and it is trap 3 above.
+Navigation-loss detection moved from the lane controller into `WebViewSerializer`, where every
+controller gets it. Its original resubmit-once behavior has since been replaced by an explicit
+unknown-outcome error to avoid replaying mutations; see trap 3 above.
 
 It also gave up one capability, and it is worth knowing what it was: nothing can put a foreign site
 *inside* a document of ours any more. An app that wanted its own chrome around a live third-party

@@ -23,7 +23,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -52,6 +54,7 @@ import kotlin.coroutines.cancellation.CancellationException
 class WorkflowEngine(
     private val lanes: LaneSource,
     private val context: CoroutineContext = Dispatchers.Default,
+    private val snapshotPolicy: SnapshotPolicy = SnapshotPolicy(),
 ) {
     // Extra fan-out workers share one budget across recursive items. The current coroutine always
     // processes items too: waiting parents therefore never consume all permits their children need.
@@ -61,7 +64,8 @@ class WorkflowEngine(
     constructor(
         controller: WebViewController,
         context: CoroutineContext = Dispatchers.Default,
-    ) : this(LaneSource.of(controller), context)
+        snapshotPolicy: SnapshotPolicy = SnapshotPolicy(),
+    ) : this(LaneSource.of(controller), context, snapshotPolicy)
 
     fun run(workflow: Workflow): Flow<WorkflowEvent> =
         channelFlow {
@@ -422,7 +426,6 @@ class WorkflowEngine(
         controller: WebViewController,
         path: StepPath,
     ) {
-        controller.checkHandles(step)
         when (step) {
             is WorkflowStep.Navigate -> {
                 controller.navigate(step.url.resolve(variables, path))
@@ -438,18 +441,19 @@ class WorkflowEngine(
                 // that round trip is the dominant cost. Counting only the delays let a nominal 10s
                 // timeout run for a minute.
                 withTimeoutOrNull(step.timeoutMs) {
-                    while (!controller.matches(step.locator)) {
+                    while (!controller.matches(step.locator, rejectStale = true)) {
                         delay(POLL_INTERVAL_MS)
                     }
                 } ?: error("Timeout waiting for ${step.locator.describe()}")
             }
 
             is WorkflowStep.Click -> {
-                controller.evaluateJs("${LocatorJs.first(step.locator)}?.click()")
+                controller.evaluateStep(step, "${LocatorJs.first(step.locator)}?.click()")
             }
 
             is WorkflowStep.Input -> {
-                controller.evaluateJs(
+                controller.evaluateStep(
+                    step,
                     "(function(){var el=${LocatorJs.first(step.locator)};" +
                         "if(el){el.value=${jsString(step.text.resolve(variables, path))};" +
                         "el.dispatchEvent(new Event('input',{bubbles:true}));" +
@@ -459,7 +463,7 @@ class WorkflowEngine(
 
             is WorkflowStep.Extract -> {
                 val expr = LocatorJs.read(LocatorJs.first(step.locator), step.from)
-                variables[step.into] = controller.evaluateJs(expr).decodeJsResult()
+                variables[step.into] = controller.evaluateStep(step, expr).decodeJsResult()
             }
 
             is WorkflowStep.ExtractRows -> {
@@ -475,14 +479,18 @@ class WorkflowEngine(
                         ".slice(0,${step.limit}).map(function(r){return {$fields};});})()"
                 // Left as the JSON array the page produced: a list of records has no more faithful
                 // rendering as a single string, and whatever consumes it will parse it anyway.
-                variables[step.into] = controller.evaluateJs(expr).decodeJsResult()
+                variables[step.into] = controller.evaluateStep(step, expr).decodeJsResult()
             }
 
             is WorkflowStep.Snapshot -> {
-                variables[step.into] =
+                val raw =
                     controller
-                        .evaluateJs(SnapshotJs.snapshot(step.maxNodes, step.nameLimit))
+                        .evaluateJs(SnapshotJs.snapshot(step.maxNodes, step.nameLimit, snapshotPolicy))
                         .decodeJsResult()
+                (Json.parseToJsonElement(raw) as? JsonObject)?.get("error")?.let {
+                    error(it.jsonPrimitive.content)
+                }
+                variables[step.into] = raw
             }
 
             is WorkflowStep.EvaluateJs -> {
@@ -532,28 +540,40 @@ class WorkflowEngine(
      * whereas the string comparison read every such answer as "not yet" and polled until the
      * timeout, reporting a missing element rather than a page behaving impossibly.
      */
-    private suspend fun WebViewController.matches(locator: Locator): Boolean =
+    private suspend fun WebViewController.matches(
+        locator: Locator,
+        rejectStale: Boolean = false,
+    ): Boolean =
         try {
-            evaluate("${LocatorJs.first(locator)}!==null")
+            val expression = "${LocatorJs.first(locator)}!==null"
+            if (rejectStale && locator is Locator.Handle) {
+                Json.decodeFromString<Boolean>(evaluateHandles(listOf(locator.ref), expression))
+            } else {
+                evaluate(expression)
+            }
         } catch (_: ScriptTimeoutException) {
             false
         }
 
     /**
-     * Fails the step if it addresses an element by a handle the page cannot resolve.
-     *
-     * Costs one extra round trip per handle, and buys the difference between an agent being told
-     * *"handle `e7` refers to an element that has since been removed"* and an agent watching a click
-     * land on nothing. Every generated expression resolves a missing handle to `null`, so without
-     * this the step would succeed having done nothing at all — the failure mode a handle exists to
-     * rule out. Selector-addressed steps skip it entirely.
+     * Validation and action share one evaluation, so a changed document cannot turn a validated
+     * handle into a silent no-op between native callbacks. CSS/XPath keep their existing result shape.
      */
-    private suspend fun WebViewController.checkHandles(step: WorkflowStep) {
-        for (locator in step.locators()) {
-            if (locator !is Locator.Handle) continue
-            val status = evaluateJs(SnapshotJs.statusOf(locator.ref)).decodeJsResult()
-            SnapshotJs.explain(locator.ref, status)?.let { error(it) }
-        }
+    private suspend fun WebViewController.evaluateStep(
+        step: WorkflowStep,
+        expression: String,
+    ): String = evaluateHandles(step.locators().filterIsInstance<Locator.Handle>().map { it.ref }, expression)
+
+    private suspend fun WebViewController.evaluateHandles(
+        refs: List<String>,
+        expression: String,
+    ): String {
+        if (refs.isEmpty()) return evaluateJs(expression)
+        val result = Json.parseToJsonElement(evaluateJs(SnapshotJs.guarded(refs, expression)).decodeJsResult()) as JsonObject
+        val status = result.getValue("status").jsonPrimitive.content
+        val ref = result["handle"]?.jsonPrimitive?.content ?: refs.first()
+        SnapshotJs.explain(ref, status)?.let { error(it) }
+        return result["value"]?.toString() ?: "null"
     }
 
     /** See [LaneHolder.release]. Swallows everything but cancellation, by design. */
