@@ -1,10 +1,12 @@
 package dev.ggoggam.vitre.core.webview
 
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.resume
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -140,47 +142,64 @@ class WebViewSerializerTest {
         }
 
     @Test
-    fun a_script_the_page_navigated_away_from_is_submitted_once_more() =
-        runTest {
-            val serializer = WebViewSerializer(UnconfinedTestDispatcher(testScheduler))
-            var attempts = 0
-
-            val result =
-                serializer.evaluate(timeoutMs = 1_000) { cont ->
-                    attempts++
-                    // The first submission is lost the way a real one is: the page navigates and
-                    // the platform drops the callback without ever invoking it.
-                    if (attempts == 1) {
-                        // The page navigates: the callback for this submission is dropped and never
-                        // fires, and the replacement document settles a moment later.
-                        serializer.started()
-                        serializer.finished()
-                    } else {
-                        cont.resume("\"second\"")
-                    }
-                }
-
-            assertEquals(2, attempts)
-            assertEquals("\"second\"", result)
-        }
-
-    @Test
-    fun a_script_lost_twice_is_reported_rather_than_retried_forever() =
+    fun a_side_effect_is_not_replayed_when_navigation_drops_its_callback() =
         runTest {
             val serializer = WebViewSerializer(UnconfinedTestDispatcher(testScheduler))
             var attempts = 0
 
             val failure =
-                assertFailsWith<ScriptTimeoutException> {
+                assertFailsWith<ScriptOutcomeUnknownException> {
                     serializer.evaluate(timeoutMs = 1_000) {
+                        // Represents an executed click or POST whose callback never reaches us.
                         attempts++
                         serializer.started()
                         serializer.finished()
                     }
                 }
 
-            assertEquals(2, attempts, "a second loss is a fault, not something to keep retrying")
-            assertTrue("navigated away" in failure.message.orEmpty(), "unhelpful message: ${failure.message}")
+            assertEquals(1, attempts)
+            assertTrue("may already have taken effect" in failure.message.orEmpty())
+        }
+
+    @Test
+    fun a_navigation_that_never_finishes_still_does_not_replay_the_script() =
+        runTest {
+            val serializer = WebViewSerializer(UnconfinedTestDispatcher(testScheduler))
+            var attempts = 0
+
+            val failure =
+                assertFailsWith<ScriptOutcomeUnknownException> {
+                    serializer.evaluate(timeoutMs = 1_000) {
+                        attempts++
+                        serializer.started()
+                    }
+                }
+
+            assertEquals(1, attempts)
+            assertTrue("1000ms" in failure.message.orEmpty(), "unhelpful message: ${failure.message}")
+        }
+
+    @Test
+    fun caller_navigation_timeout_remains_cancellation() =
+        runTest {
+            val serializer = WebViewSerializer(UnconfinedTestDispatcher(testScheduler))
+            assertFailsWith<TimeoutCancellationException> {
+                withTimeout(100) { serializer.navigate(10_000) { serializer.started() } }
+            }
+            // The cancellation also released operation ownership.
+            serializer.evaluate { it.resume("null") }
+        }
+
+    @Test
+    fun caller_script_timeout_remains_cancellation_without_replaying() =
+        runTest {
+            val serializer = WebViewSerializer(UnconfinedTestDispatcher(testScheduler))
+            var attempts = 0
+            assertFailsWith<TimeoutCancellationException> {
+                withTimeout(100) { serializer.evaluate(10_000) { attempts++ } }
+            }
+            assertEquals(1, attempts)
+            serializer.evaluate { it.resume("null") }
         }
 
     @Test

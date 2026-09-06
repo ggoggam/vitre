@@ -1,6 +1,7 @@
 package dev.ggoggam.vitre.core.workflow
 
 import dev.ggoggam.vitre.core.testing.FakeWebViewController
+import dev.ggoggam.vitre.core.webview.ScriptOutcomeUnknownException
 import dev.ggoggam.vitre.core.webview.ScriptTimeoutException
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
@@ -77,7 +78,7 @@ class WaitForStepTest {
 
                             // The new document commits with this poll in flight, so its callback
                             // is dropped and the evaluation times out instead of answering.
-                            calls == 2 -> throw ScriptTimeoutException("Script did not return within 15000ms")
+                            calls == 2 -> throw ScriptOutcomeUnknownException("The page navigated away before the poll returned")
 
                             // The awaited page is now live.
                             else -> "true"

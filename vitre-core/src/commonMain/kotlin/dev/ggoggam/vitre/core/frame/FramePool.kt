@@ -5,14 +5,20 @@ import dev.ggoggam.vitre.core.webview.WebViewController
 import dev.ggoggam.vitre.core.workflow.Workflow
 import dev.ggoggam.vitre.core.workflow.WorkflowEngine
 import dev.ggoggam.vitre.core.workflow.WorkflowEvent
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.CoroutineContext
 
 /**
@@ -54,6 +60,12 @@ class FramePool internal constructor(
     val tap: NetworkTap?,
     private val lanes: Map<String, WebViewController>,
 ) : LaneSource {
+    private val mutableState = MutableStateFlow(PoolState())
+
+    /** Ownership and health, independent of any one run's event collector. */
+    val state: StateFlow<PoolState> = mutableState.asStateFlow()
+    private val admissionGate = Mutex()
+
     /**
      * The lanes nobody is on. A channel rather than a semaphore plus a free list because a channel
      * is both at once, and hands lanes to waiting receivers in the order they arrived.
@@ -66,7 +78,7 @@ class FramePool internal constructor(
     // A receive can consume a lane and then throw cancellation before the borrower resumes. In
     // that case acquire's try/finally never sees it. The channel returns ownership here instead.
     private fun returnUndeliveredLane(lane: Lane) {
-        free.trySend(lane)
+        if (!state.value.closed && lane.id !in state.value.unavailableLaneIds) free.trySend(lane)
     }
 
     /** @throws IllegalArgumentException if [id] is not one of [laneIds]. */
@@ -78,22 +90,58 @@ class FramePool internal constructor(
     /** How many workflows may be in flight at once. Decided by the device, not by the caller. */
     val laneCount: Int get() = laneIds.size
 
+    override val parallelism: Int get() = laneCount
+
+    /**
+     * Stops admission and wakes waiting borrowers. Existing borrowers may finish and release;
+     * native WebView disposal remains the platform owner's responsibility.
+     */
+    fun close() {
+        mutableState.update { it.copy(closed = true) }
+        free.close(PoolUnavailableException("The lane pool is closed"))
+    }
+
     /**
      * The next free lane, blanked, with [label] painted on it while its page is on the way.
      *
      * Every lease starts on a blank lane, not only the first of a task. Under the old
      * one-lane-per-site arrangement resetting was a between-runs nicety; with a queue, lane reuse
      * is the normal case, and a `WaitFor` matching the *previous* borrower's leftover DOM is a
-     * failure that looks exactly like success. A lane that cannot be blanked — wedged, or closed
-     * under us — is put back for the next borrower to discover and the failure goes to this one,
-     * so it costs one task and not the pool.
+     * failure that looks exactly like success. A lane that cannot be blanked is quarantined so
+     * it cannot fail subsequent unrelated tasks. Rebuild the platform pool to replace unhealthy
+     * WebViews. If every lane is unavailable, queued borrowers fail promptly.
      */
     override suspend fun acquire(label: String): Lane {
+        val lane = admissionGate.withLock { claimLane() }
+        return prepareLane(lane, label)
+    }
+
+    /** Called under admissionGate. Mark ownership before another admission or reset may start. */
+    private suspend fun claimLane(): Lane {
+        if (state.value.closed) throw PoolUnavailableException("The lane pool is closed")
         val lane = free.receive()
+        val claimed = mutableState.updateAndGet { if (it.closed) it else it.copy(leasedLaneIds = it.leasedLaneIds + lane.id) }
+        if (claimed.closed) throw PoolUnavailableException("The lane pool is closed")
+        return lane
+    }
+
+    private suspend fun prepareLane(
+        lane: Lane,
+        label: String,
+    ): Lane {
         try {
             lane.controller.loadHtml(placeholderHtml(lane.id, label))
+        } catch (cancelled: CancellationException) {
+            release(lane)
+            throw cancelled
         } catch (t: Throwable) {
-            free.trySend(lane)
+            val health =
+                mutableState.updateAndGet {
+                    it.copy(leasedLaneIds = it.leasedLaneIds - lane.id, unavailableLaneIds = it.unavailableLaneIds + lane.id)
+                }
+            if (health.unavailableLaneIds.size == laneCount) {
+                free.close(PoolUnavailableException("Every lane is unavailable; rebuild the platform pool"))
+            }
             throw t
         }
         return lane
@@ -101,7 +149,11 @@ class FramePool internal constructor(
 
     override fun release(lane: Lane) {
         require(lanes[lane.id] === lane.controller) { "lane ${lane.id} does not belong to this pool" }
-        free.trySend(lane)
+        mutableState.update {
+            require(lane.id in it.leasedLaneIds) { "lane ${lane.id} is not leased" }
+            it.copy(leasedLaneIds = it.leasedLaneIds - lane.id)
+        }
+        returnUndeliveredLane(lane)
     }
 
     /**
@@ -113,11 +165,11 @@ class FramePool internal constructor(
      * [WorkflowEvent.Completed] or [WorkflowEvent.Failed]. A workflow that fails costs its own
      * task and nothing else: its lane goes back to the pool and the next borrower takes it.
      *
-     * Every workflow is submitted at once and borrows its lanes from this pool as it goes, so a
-     * task past the lane count sits in the lane queue rather than in a task queue — the visible
-     * difference being that a fan-out in a running task can use lanes ahead of a task that has not
-     * started. [PoolEvent.laneId] follows the borrows: it is the lane of the most recent lease in
-     * that task, and null only for the event of a task that failed before its first lease.
+     * A fixed number of workers admit workflows from the list, so pending workflows do not each
+     * retain a coroutine. Fan-outs release their lane and process children with a separate bounded
+     * budget, including inline work when that budget is exhausted. [PoolEvent.laneId] follows the
+     * borrows: it is the lane of the most recent lease in that task, and null only for the event of
+     * a task that failed before its first lease.
      *
      * The returned flow completes when the queue is drained. Cancelling the collector cancels the
      * lanes mid-step.
@@ -127,30 +179,45 @@ class FramePool internal constructor(
         context: CoroutineContext = Dispatchers.Default,
     ): Flow<PoolEvent> =
         channelFlow {
-            workflows.forEachIndexed { index, workflow ->
+            val admission = Mutex()
+            var next = 0
+            repeat(minOf(laneCount, workflows.size)) {
                 launch {
-                    var laneId: String? = null
-                    WorkflowEngine(this@FramePool, context).run(workflow).collect { event ->
-                        if (event is WorkflowEvent.LaneLeased) laneId = event.laneId
-                        send(PoolEvent(index, laneId, workflow, event))
+                    while (true) {
+                        val index = admission.withLock { if (next < workflows.size) next++ else null } ?: break
+                        val workflow = workflows[index]
+                        var laneId: String? = null
+                        WorkflowEngine(this@FramePool, context).run(workflow).collect { event ->
+                            if (event is WorkflowEvent.LaneLeased) laneId = event.laneId
+                            send(PoolEvent(index, laneId, workflow, event))
+                        }
                     }
                 }
             }
         }
 
     /**
-     * Blanks every lane, concurrently, and waits for all of them.
+     * Reserves and blanks every healthy lane, then returns them together.
      *
      * Between runs rather than before one: a lane still showing the previous run's results looks
      * exactly like a lane that has already finished the current one, and that ambiguity has cost
-     * more debugging time than it sounds like it should. Meant for a pool with nothing borrowed;
-     * a lane on loan at the time is blanked under its borrower.
+     * more debugging time than it sounds like it should. A borrowed lane is reset only after its
+     * current owner releases it, so a concurrent reset cannot replace an active borrower's page.
      */
-    suspend fun resetAll(label: String = "idle") {
-        coroutineScope {
-            laneIds.map { id -> async { lanes.getValue(id).loadHtml(placeholderHtml(id, label)) } }.awaitAll()
+    suspend fun resetAll(label: String = "idle") =
+        admissionGate.withLock {
+            // Stop new admission while owners finish. This also avoids two resets each holding
+            // half the pool, and a lane being quarantined while a reset waits to reserve it.
+            state.first { it.closed || it.leasedLaneIds.isEmpty() }
+            val count = laneCount - state.value.unavailableLaneIds.size
+            if (state.value.closed || count == 0) throw PoolUnavailableException("The lane pool is unavailable")
+            val borrowed = mutableListOf<Lane>()
+            try {
+                repeat(count) { borrowed += prepareLane(claimLane(), label) }
+            } finally {
+                borrowed.forEach(::release)
+            }
         }
-    }
 
     /**
      * `about:blank` would be simpler and is a trap: it is not a document the injected runtime ever
@@ -180,6 +247,18 @@ class FramePool internal constructor(
      */
     private fun String.htmlEscaped(): String = replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 }
+
+/** Current pool ownership. A quarantined lane remains unavailable until the pool is rebuilt. */
+data class PoolState(
+    val closed: Boolean = false,
+    val leasedLaneIds: Set<String> = emptySet(),
+    val unavailableLaneIds: Set<String> = emptySet(),
+)
+
+/** The pool was closed or cannot provide any healthy lanes. */
+class PoolUnavailableException(
+    message: String,
+) : IllegalStateException(message)
 
 /**
  * One workflow's progress, and which lane it is on.

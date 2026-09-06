@@ -33,6 +33,39 @@ import kotlinx.serialization.Serializable
 private const val SESSION = PageToolDocs.SESSION
 private const val LEASE = PageToolDocs.LEASE
 
+/** Static availability; querying this does not itself ask for permission to act. */
+class CapabilitiesTool(
+    driver: PageDriver,
+    private val includeLeaseTools: Boolean = true,
+) : VitrePageTextTool<CapabilitiesTool.Args>(
+        driver = driver,
+        argsType = typeToken<Args>(),
+        name = "capabilities",
+        description = PageToolDocs.CAPABILITIES,
+    ) {
+    @Serializable
+    data class Args(
+        @property:LLMDescription(SESSION)
+        override val session: String? = null,
+        @property:LLMDescription(LEASE)
+        override val lease: String? = null,
+    ) : PageToolArgs
+
+    override suspend fun act(
+        args: Args,
+        target: PageTarget,
+    ): String {
+        val capabilities = driver.capabilities(target)
+        return capabilities
+            .copy(
+                operations =
+                    capabilities.operations.filter {
+                        includeLeaseTools || it !in setOf("acquire_lease", "release_lease")
+                    },
+            ).render()
+    }
+}
+
 // ── list_sessions ──────────────────────────────────────────────────────────────────────────────
 
 /**

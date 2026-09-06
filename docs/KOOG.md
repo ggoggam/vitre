@@ -4,6 +4,10 @@
 Vitre's page vocabulary into it: an agent built with Koog gets `snapshot`, `click`, `extract_rows`
 and the rest as ordinary Koog tools, on Android, iOS and the desktop.
 
+The shared driver also enforces host [action authorization](ACTION-POLICY.md): disabled operations
+are omitted from the generated tool registry, and `capabilities` reports enabled operations and
+limitations. A suspending authorizer can wait for user approval without occupying the lease's use gate.
+
 There are two ways in, and a plugin that makes both of them safe to leave running while a user is
 looking at the same WebView.
 

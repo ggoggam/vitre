@@ -43,8 +43,9 @@ class LocatorStepTest {
             val scripts = controller.evaluatedScripts
             assertTrue(scripts.all { "document.evaluate" in it }, "not XPath: $scripts")
             assertTrue(scripts.none { "querySelector" in it }, "fell back to CSS: $scripts")
-            // FIRST_ORDERED_NODE_TYPE, and the context node the expression is resolved against.
-            assertTrue(scripts.all { ",document,null,9,null" in it }, "wrong result type: $scripts")
+            // Presence uses the first node; strict click must examine every match.
+            assertTrue(",document,null,9,null" in scripts.first(), "wrong presence result type: $scripts")
+            assertTrue(",document,null,7,null" in scripts.last(), "wrong click result type: $scripts")
         }
 
     @Test

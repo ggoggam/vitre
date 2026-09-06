@@ -79,6 +79,7 @@ class KcefWebViewPool private constructor(
      * exits. Call it after the components have left the window.
      */
     fun dispose() {
+        pool.close()
         controllers.values.forEach { it.close() }
         browsers.forEach { runCatching { it.dispose() } }
         clients.forEach { runCatching { it.dispose() } }

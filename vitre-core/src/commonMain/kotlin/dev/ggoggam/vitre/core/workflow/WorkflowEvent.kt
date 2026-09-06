@@ -1,5 +1,17 @@
 package dev.ggoggam.vitre.core.workflow
 
+/** How a caller can recover; an unknown outcome must not be retried as a known rejection. */
+enum class WorkflowFailureKind {
+    /** A general failure, with no guarantee about side effects; inspect [WorkflowEvent.Failed.message]. */
+    Failure,
+
+    /** Action validation rejected the target before dispatch. */
+    ActionRejected,
+
+    /** A script may have taken effect but its result could not be confirmed. */
+    OutcomeUnknown,
+}
+
 sealed class WorkflowEvent {
     data class StepStarted(
         val path: StepPath,
@@ -17,6 +29,7 @@ sealed class WorkflowEvent {
     data class Failed(
         val path: StepPath,
         val message: String,
+        val kind: WorkflowFailureKind = WorkflowFailureKind.Failure,
     ) : WorkflowEvent()
 
     /**
