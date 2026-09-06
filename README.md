@@ -390,6 +390,10 @@ from the snapshot and treat them as opaque. Passwords, one-time codes and card a
 are redacted; other form values are bounded. Hosts can configure additional subtree redaction using
 `SnapshotPolicy` on `WorkflowEngine`, `PageDriver`, or `McpServer`.
 
+Hosts can disable tool operations or suspend them for user approval with `PageAccessPolicy`.
+MCP and Koog expose `capabilities` to report enabled operations and limitations. See
+[host action authorization](docs/ACTION-POLICY.md) for examples and the enforcement boundary.
+
 From there the agent uses the returned refs (shown abbreviated below):
 
 ```kotlin

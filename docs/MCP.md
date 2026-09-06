@@ -86,6 +86,11 @@ operator binds loosely at the top level of any locator expression, which can.
 
 ## Sessions
 
+Hosts can attach `PageAccessPolicy` to disable operations or suspend individual calls for approval.
+`capabilities` reports enabled operations and limitations; disabled tools are hidden from `tools/list`
+and rejected on direct invocation. See [ACTION-POLICY.md](ACTION-POLICY.md) for the approval lifecycle
+and why requested-URL checks do not constrain native redirects.
+
 MCP is stateless by design — a server may not infer anything from an earlier message on the same
 connection — and a WebView is nothing but state. `WebViewSessions` is the join. It lives in
 `vitre-agent` rather than here, because every way of letting an agent at a page has the same
