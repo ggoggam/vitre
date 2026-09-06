@@ -79,9 +79,18 @@ class WorkflowQueue(
                         pool.run(listOf(workflow), context).collect { event ->
                             progress.value = event
                             when (val detail = event.event) {
-                                is WorkflowEvent.Completed -> outcome = WorkflowJobState.Completed(detail)
-                                is WorkflowEvent.Failed -> outcome = WorkflowJobState.Failed(detail.message, detail.path)
-                                else -> Unit
+                                is WorkflowEvent.Completed -> {
+                                    outcome = WorkflowJobState.Completed(detail)
+                                }
+
+                                is WorkflowEvent.Failed -> {
+                                    outcome =
+                                        WorkflowJobState.Failed(detail.message, detail.path, kind = detail.kind)
+                                }
+
+                                else -> {
+                                    Unit
+                                }
                             }
                         }
                     }

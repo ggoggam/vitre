@@ -33,6 +33,7 @@ function run(kind, nodes, invalid = false) {
       },
     },
   });
+  context.window.__vitre.document = context.document;
   const result = vm.runInContext(scripts[kind], context);
   if (kind !== 'handle') assert.equal(queries, 1, 'target is resolved once');
   return result;
@@ -60,7 +61,9 @@ for (const kind of ['css', 'xpath', 'handle']) {
     [element({getClientRects: () => [{width: 0, height: 30}]}), /layout box/],
   ];
   for (const [target, reason] of cases) {
-    assert.match(run(kind, [target]), reason);
+    // Detached handles resolve to null before ClickJs sees them. The engine's enclosing atomic
+    // handle guard supplies the richer detached rejection (covered by ActionOutcomeTest).
+    assert.match(run(kind, [target]), kind === 'handle' && !target.isConnected ? /No element matched/ : reason);
     assert.equal(target.clicks, 0, 'rejected action must not dispatch');
   }
   for (const parent of [element({inert: true}), element({hidden: true}),

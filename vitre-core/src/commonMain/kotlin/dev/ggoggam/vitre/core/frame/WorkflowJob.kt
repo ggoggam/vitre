@@ -3,6 +3,7 @@ package dev.ggoggam.vitre.core.frame
 import dev.ggoggam.vitre.core.workflow.StepPath
 import dev.ggoggam.vitre.core.workflow.Workflow
 import dev.ggoggam.vitre.core.workflow.WorkflowEvent
+import dev.ggoggam.vitre.core.workflow.WorkflowFailureKind
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -41,6 +42,7 @@ sealed class WorkflowJobState {
         val message: String,
         val path: StepPath? = null,
         val cause: Throwable? = null,
+        val kind: WorkflowFailureKind = WorkflowFailureKind.Failure,
     ) : WorkflowJobState()
 
     /** Cancellation does not roll back page actions that already happened. */

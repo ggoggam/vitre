@@ -58,6 +58,54 @@ class ActionOutcomeTest {
         }
 
     @Test
+    fun malformed_handle_acknowledgements_do_not_claim_the_click_was_rejected() =
+        runTest {
+            val answers =
+                listOf(
+                    "null",
+                    "false",
+                    "[]",
+                    "{}",
+                    "not json",
+                    """{"status":null}""",
+                    """{"status":true}""",
+                    """{"status":{}}""",
+                    """{"status":"unexpected"}""",
+                    """{"status":"ok"}""",
+                    """{"status":"ok","value":null}""",
+                    """{"status":"detached","handle":17}""",
+                    """{"status":"unknown","handle":"other"}""",
+                )
+            for (answer in answers) {
+                val page = FakeWebViewController().apply { nextEvalResult = { answer } }
+                val task =
+                    workflow("action", "action") {
+                        click(handle("ref"))
+                        navigate("https://next.test")
+                    }
+                val failure = assertIs<WorkflowEvent.Failed>(WorkflowEngine(page, EmptyCoroutineContext).run(task).toList().last())
+                assertEquals(WorkflowFailureKind.OutcomeUnknown, failure.kind, answer)
+                assertEquals(1, page.evaluatedScripts.size, "an ambiguous click must not be replayed")
+                assertEquals(emptyList(), page.navigations)
+            }
+        }
+
+    @Test
+    fun known_stale_handle_responses_are_action_rejections() =
+        runTest {
+            for (status in listOf("no-snapshot", "unknown", "detached")) {
+                val page =
+                    FakeWebViewController().apply {
+                        nextEvalResult = { """{"status":"$status","handle":"ref"}""" }
+                    }
+                val task = workflow("action", "action") { click(handle("ref")) }
+                val failure = assertIs<WorkflowEvent.Failed>(WorkflowEngine(page, EmptyCoroutineContext).run(task).toList().last())
+                assertEquals(WorkflowFailureKind.ActionRejected, failure.kind, status)
+                assertEquals(1, page.evaluatedScripts.size)
+            }
+        }
+
+    @Test
     fun old_failed_event_construction_keeps_the_general_failure_default() {
         assertEquals(WorkflowFailureKind.Failure, WorkflowEvent.Failed(StepPath.root(0), "error").kind)
     }

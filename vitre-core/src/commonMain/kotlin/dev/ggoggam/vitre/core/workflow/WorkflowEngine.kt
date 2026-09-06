@@ -579,11 +579,36 @@ class WorkflowEngine(
         expression: String,
     ): String {
         if (refs.isEmpty()) return evaluateJs(expression)
-        val result = Json.parseToJsonElement(evaluateJs(SnapshotJs.guarded(refs, expression)).decodeJsResult()) as JsonObject
-        val status = result.getValue("status").jsonPrimitive.content
-        val ref = result["handle"]?.jsonPrimitive?.content ?: refs.first()
-        SnapshotJs.explain(ref, status)?.let { error(it) }
-        return result["value"]?.toString() ?: "null"
+
+        fun unknownOutcome(): Nothing =
+            throw ScriptOutcomeUnknownException(
+                "The operation on handle `${refs.first()}` returned an invalid acknowledgement; " +
+                    "it may already have taken effect. Inspect the page before retrying.",
+            )
+        // Do not catch evaluation itself: cancellation and typed platform failures must survive.
+        val raw = evaluateJs(SnapshotJs.guarded(refs, expression))
+        val result =
+            runCatching { Json.parseToJsonElement(raw.decodeJsResult()) as? JsonObject }.getOrNull()
+                ?: unknownOutcome()
+        val status = (result["status"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: unknownOutcome()
+        return when (status) {
+            "ok" -> {
+                result["value"]?.toString() ?: "null"
+            }
+
+            "no-snapshot", "unknown", "detached" -> {
+                val ref =
+                    result["handle"]?.let {
+                        (it as? JsonPrimitive)?.takeIf { value -> value.isString && value.content in refs }?.content
+                            ?: unknownOutcome()
+                    } ?: refs.first()
+                throw ActionRejectedException(requireNotNull(SnapshotJs.explain(ref, status)))
+            }
+
+            else -> {
+                unknownOutcome()
+            }
+        }
     }
 
     /** See [LaneHolder.release]. Swallows everything but cancellation, by design. */
