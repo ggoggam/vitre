@@ -52,7 +52,7 @@ internal object SnapshotJs {
     fun resolve(ref: String): String =
         "(function(){var W=$REGISTRY;" +
             "var e=W&&W.document===document&&W.byRef?W.byRef.get(${jsString(ref)}):null;" +
-            "return e&&e.isConnected?e:null;})()"
+            "return e&&e.isConnected&&e.ownerDocument===document?e:null;})()"
 
     /** An expression returning `"ok"`, `"no-snapshot"`, `"unknown"` or `"detached"` for [ref]. */
     fun statusOf(ref: String): String =
@@ -60,7 +60,7 @@ internal object SnapshotJs {
             "if(!W||W.document!==document||!W.byRef)return 'no-snapshot';" +
             "var e=W.byRef.get(${jsString(ref)});" +
             "if(!e)return 'unknown';" +
-            "if(!e.isConnected)return 'detached';" +
+            "if(!e.isConnected||e.ownerDocument!==document)return 'detached';" +
             "return 'ok';})()"
 
     /** Validate and execute in one JavaScript turn; a navigation cannot slip between callbacks. */
@@ -149,7 +149,16 @@ internal object SnapshotJs {
         function redacted(el){
           return sensitive(el)||REDACT.some(function(s){return !!el.closest(s);});
         }
+        function hasRedactedContent(el){
+          if(redacted(el))return true;
+          for(var i=0;i<el.children.length;i++){
+            if(hasRedactedContent(el.children[i]))return true;
+          }
+          return false;
+        }
         function safeText(el){
+          // Ancestor names must obey the same exclusions as the main snapshot walk.
+          if(SKIP[el.tagName.toUpperCase()])return '';
           if(redacted(el))return '[redacted]';
           var text='';
           for(var i=0;i<el.childNodes.length;i++){
@@ -241,8 +250,12 @@ internal object SnapshotJs {
           if(mask)node.redacted=true;
           var t=el.tagName.toUpperCase();
           if(t==='INPUT'||t==='TEXTAREA'||t==='SELECT'){
-            var value=mask?'[redacted]':String(el.value==null?'':el.value);
-            node.value=mask?value:(value.length>VALUELEN?value.slice(0,VALUELEN)+'…':value);
+            // SELECT.value copies the selected option's value (or text), so redacting the option
+            // itself is insufficient. Include descendants for options with structured content.
+            var maskValue=mask||(t==='SELECT'&&Array.from(el.selectedOptions||[]).some(hasRedactedContent));
+            if(maskValue)node.redacted=true;
+            var value=maskValue?'[redacted]':String(el.value==null?'':el.value);
+            node.value=maskValue?value:(value.length>VALUELEN?value.slice(0,VALUELEN)+'…':value);
             if(el.disabled)node.disabled=true;
             if(role==='checkbox'||role==='radio')node.checked=!!el.checked;
           }
