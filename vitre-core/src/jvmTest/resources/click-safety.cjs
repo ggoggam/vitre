@@ -34,6 +34,7 @@ function run(kind, nodes, invalid = false) {
     },
   });
   context.window.__vitre.document = context.document;
+  nodes.forEach(node => { node.ownerDocument = context.document; });
   const result = vm.runInContext(scripts[kind], context);
   if (kind !== 'handle') assert.equal(queries, 1, 'target is resolved once');
   return result;
