@@ -4,9 +4,12 @@ import ai.koog.agents.core.tools.ToolCallMetadata
 import ai.koog.agents.core.tools.ToolException
 import ai.koog.agents.core.tools.ToolParameterType
 import ai.koog.serialization.kotlinx.KotlinxSerializer
+import dev.ggoggam.vitre.agent.PageAccessPolicy
+import dev.ggoggam.vitre.agent.PageActionKind
 import dev.ggoggam.vitre.agent.PageDriver
 import dev.ggoggam.vitre.agent.session.WebViewSessions
 import dev.ggoggam.vitre.koog.testing.FakePageController
+import dev.ggoggam.vitre.koog.tools.CapabilitiesTool
 import dev.ggoggam.vitre.koog.tools.ClickTool
 import dev.ggoggam.vitre.koog.tools.EvaluateTool
 import dev.ggoggam.vitre.koog.tools.ExtractRowsTool
@@ -26,6 +29,30 @@ import kotlin.test.assertTrue
 
 /** "An agent driving this page through Koog gets the same page, and the same warnings, as over MCP." */
 class VitreToolsTest {
+    @Test
+    fun disabled_evaluate_is_hidden_and_enforced_even_on_a_manually_constructed_tool() =
+        runTest {
+            val page = FakePageController()
+            val sessions = WebViewSessions().apply { register("main", page) }
+            val driver =
+                PageDriver(
+                    sessions,
+                    this,
+                    EmptyCoroutineContext,
+                    accessPolicy = PageAccessPolicy(enabledActions = PageActionKind.entries.toSet() - PageActionKind.Evaluate),
+                )
+            val tools = vitreWebViewTools(driver, includeLeaseTools = false)
+            assertFalse("evaluate" in tools.map { it.name })
+            assertFailsWith<ToolException.ValidationFailure> {
+                EvaluateTool(driver).execute(EvaluateTool.Args("deleteAccount()"), ToolCallMetadata.EMPTY)
+            }
+            assertTrue(page.evaluatedScripts.isEmpty())
+            val capabilities =
+                (tools.single { it.name == "capabilities" } as CapabilitiesTool)
+                    .execute(CapabilitiesTool.Args(), ToolCallMetadata.EMPTY)
+            assertFalse("acquire_lease" in capabilities || "release_lease" in capabilities)
+        }
+
     private val snapshotJson =
         """
         {"url":"https://shop.test/","title":"Shop","truncated":false,"nodes":[
@@ -58,7 +85,7 @@ class VitreToolsTest {
             assertTrue("acquire_lease" in names && "release_lease" in names, "$names")
             // Names match the MCP server's exactly, so a system prompt written against one adapter
             // works against the other. A drift here is a prompt that silently stops matching.
-            assertEquals(13, tools.size, "$names")
+            assertEquals(14, tools.size, "$names")
         }
 
     @Test

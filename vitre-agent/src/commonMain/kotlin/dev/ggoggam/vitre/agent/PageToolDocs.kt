@@ -17,6 +17,9 @@ package dev.ggoggam.vitre.agent
  * schema generator reads.
  */
 object PageToolDocs {
+    const val CAPABILITIES: String =
+        "Report this session's enabled driver operations and platform limitations without reading the page. " +
+            "Individual actions still require host authorization. Screenshot/cookie management are not exposed."
     // ── Shared arguments ───────────────────────────────────────────────────────────────────────
 
     const val SESSION: String =
