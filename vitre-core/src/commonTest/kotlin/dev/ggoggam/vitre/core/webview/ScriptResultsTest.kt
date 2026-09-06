@@ -1,9 +1,12 @@
 package dev.ggoggam.vitre.core.webview
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -14,16 +17,27 @@ import kotlin.test.assertTrue
  * Each test builds a fresh [ScriptResults], so its first evaluate is always cid 1 — the tests
  * lean on that rather than parsing the cid back out of the wrapped script.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class ScriptResultsTest {
     private val script = AsyncScript(nonce = "n")
     private val results = ScriptResults(script)
+
+    private suspend fun evaluate(
+        expression: String,
+        timeoutMs: Long,
+        evaluateRaw: suspend (String) -> String,
+    ): String =
+        results.evaluate(expression, timeoutMs) { wrapped, onSubmitted ->
+            onSubmitted()
+            evaluateRaw(wrapped)
+        }
 
     @Test
     fun `a plain value returns through the evaluate untouched`() =
         runTest {
             val submitted = mutableListOf<String>()
             val answer =
-                results.evaluate("1 + 1", timeoutMs = 1_000) { wrapped ->
+                evaluate("1 + 1", timeoutMs = 1_000) { wrapped ->
                     submitted += wrapped
                     "2"
                 }
@@ -34,7 +48,7 @@ class ScriptResultsTest {
     @Test
     fun `a promise's settled value arrives through the bridge`() =
         runTest {
-            val answer = async { results.evaluate("fetch('/x')", timeoutMs = 5_000) { script.pendingResult(1) } }
+            val answer = async { evaluate("fetch('/x')", timeoutMs = 5_000) { script.pendingResult(1) } }
             runCurrent()
             assertTrue(results.deliver(report(cid = 1, value = "{\\\"a\\\":1}"), fromMainFrame = true))
             assertEquals("""{"a":1}""", answer.await())
@@ -45,7 +59,7 @@ class ScriptResultsTest {
         runTest {
             // Captured inside the coroutine: a failure escaping an async cancels the whole test
             // scope before an assertFailsWith around await() could see it.
-            val answer = async { runCatching { results.evaluate("fetch('/x')", timeoutMs = 5_000) { script.pendingResult(1) } } }
+            val answer = async { runCatching { evaluate("fetch('/x')", timeoutMs = 5_000) { script.pendingResult(1) } } }
             runCurrent()
             assertTrue(
                 results.deliver(
@@ -61,7 +75,7 @@ class ScriptResultsTest {
     @Test
     fun `a report from a subframe is swallowed and credits nothing`() =
         runTest {
-            val answer = async { results.evaluate("fetch('/x')", timeoutMs = 5_000) { script.pendingResult(1) } }
+            val answer = async { evaluate("fetch('/x')", timeoutMs = 5_000) { script.pendingResult(1) } }
             runCurrent()
             // Claimed — it must not reach the inbox — but the wait is still open, and the real
             // main-frame answer still wins.
@@ -75,7 +89,7 @@ class ScriptResultsTest {
     @Test
     fun `a report naming a guessed nonce is swallowed and credits nothing`() =
         runTest {
-            val answer = async { results.evaluate("fetch('/x')", timeoutMs = 5_000) { script.pendingResult(1) } }
+            val answer = async { evaluate("fetch('/x')", timeoutMs = 5_000) { script.pendingResult(1) } }
             runCurrent()
             assertTrue(results.deliver(report(cid = 1, nonce = "guess", value = "\\\"forged\\\""), fromMainFrame = true))
             runCurrent()
@@ -97,35 +111,79 @@ class ScriptResultsTest {
         }
 
     @Test
-    fun `navigation fails an armed wait promptly rather than by timeout`() =
+    fun `navigation fails a submitted promise promptly rather than by timeout`() =
         runTest {
-            val answer = async { runCatching { results.evaluate("fetch('/x')", timeoutMs = 60_000) { script.pendingResult(1) } } }
+            val answer = async { runCatching { evaluate("fetch('/x')", timeoutMs = 60_000) { script.pendingResult(1) } } }
             runCurrent()
             results.clear()
             // No virtual time has passed, so reaching the failure at all proves it was clear()'s
             // doing and not the 60s timeout.
-            assertTrue(answer.await().exceptionOrNull() is ScriptTimeoutException)
+            assertTrue(answer.await().exceptionOrNull() is ScriptOutcomeUnknownException)
         }
 
     @Test
-    fun `an evaluate still in flight survives navigation for the resubmit to answer`() =
+    fun `navigation before a pending sentinel invalidates the eventual promise wait`() =
         runTest {
-            // WebViewSerializer resubmits a script the page navigated out from under; the second
-            // run settles under the same cid, so clear() must not have failed the wait.
-            val resubmitting = CompletableDeferred<Unit>()
+            val returnSentinel = CompletableDeferred<Unit>()
             val answer =
                 async {
-                    results.evaluate("fetch('/x')", timeoutMs = 5_000) {
-                        resubmitting.await()
+                    runCatching {
+                        evaluate("fetch('/x')", timeoutMs = 5_000) {
+                            returnSentinel.await()
+                            script.pendingResult(1)
+                        }
+                    }
+                }
+            runCurrent()
+            results.clear()
+            returnSentinel.complete(Unit)
+            runCurrent()
+            assertTrue(answer.await().exceptionOrNull() is ScriptOutcomeUnknownException)
+            // A delayed report is consumed but cannot turn the invalidated wait into success.
+            assertTrue(results.deliver(report(cid = 1, value = "\\\"fresh\\\""), fromMainFrame = true))
+        }
+
+    @Test
+    fun `a caller deadline while awaiting a promise remains cancellation`() =
+        runTest {
+            assertFailsWith<TimeoutCancellationException> {
+                withTimeout(100) {
+                    evaluate("fetch('/x')", timeoutMs = 5_000) { script.pendingResult(1) }
+                }
+            }
+            // Cancellation removes the pending entry; a late settlement is still kept off inbox.
+            assertTrue(results.deliver(report(cid = 1, value = "null"), fromMainFrame = true))
+        }
+
+    @Test
+    fun `an already settled promise remains known across navigation`() =
+        runTest {
+            val answer =
+                evaluate("Promise.resolve(42)", timeoutMs = 5_000) {
+                    results.deliver(report(cid = 1, value = "42"), fromMainFrame = true)
+                    results.clear()
+                    script.pendingResult(1)
+                }
+            assertEquals("42", answer)
+        }
+
+    @Test
+    fun `navigation before submission does not invalidate a queued script`() =
+        runTest {
+            val submitNow = CompletableDeferred<Unit>()
+            val answer =
+                async {
+                    results.evaluate("Promise.resolve(42)", timeoutMs = 5_000) { _, onSubmitted ->
+                        submitNow.await()
+                        onSubmitted()
+                        results.deliver(report(cid = 1, value = "42"), fromMainFrame = true)
                         script.pendingResult(1)
                     }
                 }
             runCurrent()
             results.clear()
-            resubmitting.complete(Unit)
-            runCurrent()
-            assertTrue(results.deliver(report(cid = 1, value = "\\\"fresh\\\""), fromMainFrame = true))
-            assertEquals("\"fresh\"", answer.await())
+            submitNow.complete(Unit)
+            assertEquals("42", answer.await())
         }
 
     @Test
@@ -133,8 +191,8 @@ class ScriptResultsTest {
         runTest {
             // Direct call: runTest advances virtual time while the evaluate is suspended, so the
             // 1s timeout fires without a wall-clock wait.
-            assertFailsWith<ScriptTimeoutException> {
-                results.evaluate("fetch('/x')", timeoutMs = 1_000) { script.pendingResult(1) }
+            assertFailsWith<ScriptOutcomeUnknownException> {
+                evaluate("fetch('/x')", timeoutMs = 1_000) { script.pendingResult(1) }
             }
         }
 

@@ -168,7 +168,7 @@ class FanOutLaneTest {
         }
 
     @Test
-    fun a_lane_that_cannot_be_blanked_fails_that_task_and_goes_back_for_the_next() =
+    fun a_lane_that_cannot_be_blanked_is_quarantined_and_waiters_fail_promptly() =
         runTest {
             var loads = 0
             val lane =
@@ -195,7 +195,7 @@ class FanOutLaneTest {
             assertEquals(StepPath.root(0), failed.path)
             assertEquals("wedged", failed.message)
             assertNull(first.laneId, "a task that never got a lane has no lane to name")
-            assertTrue(events.any { it.taskIndex == 1 && it.event is WorkflowEvent.Completed })
+            assertTrue(events.any { it.taskIndex == 1 && it.event is WorkflowEvent.Failed })
         }
 
     @Test

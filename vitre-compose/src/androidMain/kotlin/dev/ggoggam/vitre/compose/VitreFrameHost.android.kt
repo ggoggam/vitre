@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -18,6 +19,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import dev.ggoggam.vitre.core.frame.AndroidWebViewPool
 import dev.ggoggam.vitre.core.frame.FramePool
 import dev.ggoggam.vitre.core.net.InterceptionPolicy
+import kotlinx.coroutines.CancellationException
 
 /**
  * One WebView per lane, sized to the device.
@@ -53,7 +55,9 @@ actual fun VitreFrameHost(
 
     // Mounted before the pool is handed over, so nothing can start a workflow against a WebView
     // that is not yet in the hierarchy.
-    pool.getOrNull()?.let { LaneGrid(it.webViews, modifier) }
+    pool.getOrNull()?.let { opened ->
+        key(opened) { LaneGrid(opened.webViews, opened.pool, modifier) }
+    }
 
     LaunchedEffect(pool) {
         val opened = pool.getOrNull()
@@ -64,6 +68,8 @@ actual fun VitreFrameHost(
         try {
             opened.open()
             ready(opened.pool)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (failure: RuntimeException) {
             Log.w(TAG, "webview pool failed to open", failure)
             unavailable(failure.message ?: "the lanes did not load")
@@ -80,6 +86,7 @@ actual fun VitreFrameHost(
 @Composable
 private fun LaneGrid(
     webViews: List<WebView>,
+    pool: FramePool,
     modifier: Modifier,
 ) {
     // Derived from what the pool actually built, not from what was asked for: `forDevice` may have
@@ -98,6 +105,11 @@ private fun LaneGrid(
                     AndroidView(
                         modifier = Modifier.weight(1f).fillMaxSize(),
                         factory = { webView },
+                        onRelease = { released ->
+                            pool.close()
+                            pool.allLanes[webViews.indexOf(released)].close()
+                            released.destroy()
+                        },
                     )
                 }
                 // A last row with one lane in a two-column grid would otherwise stretch it across

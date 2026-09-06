@@ -28,7 +28,7 @@ class JsEscapingTest {
 
             val script = controller.evaluatedScripts.single()
             assertTrue("""button[data-q=\"it's]""" in script, "expected escaped selector in: $script")
-            assertTrue(script.startsWith("document.querySelector("))
+            assertTrue("document.querySelectorAll(" in script)
         }
 
     @Test

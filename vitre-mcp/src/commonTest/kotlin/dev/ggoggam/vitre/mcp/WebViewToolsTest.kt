@@ -1,5 +1,7 @@
 package dev.ggoggam.vitre.mcp
 
+import dev.ggoggam.vitre.agent.PageAccessPolicy
+import dev.ggoggam.vitre.agent.PageActionKind
 import dev.ggoggam.vitre.agent.session.WebViewSessions
 import dev.ggoggam.vitre.mcp.testing.FakePageController
 import dev.ggoggam.vitre.mcp.testing.McpTestClient
@@ -20,6 +22,40 @@ import kotlin.test.assertTrue
 
 /** "An agent that has never seen this page can look at it and act on what it sees." */
 class WebViewToolsTest {
+    @Test
+    fun host_disabled_tools_are_hidden_and_direct_calls_cannot_override_policy() =
+        runTest {
+            val page = FakePageController()
+            val sessions = WebViewSessions().apply { register("main", page) }
+            val client =
+                McpTestClient(
+                    McpServer(
+                        sessions,
+                        this,
+                        engineContext = EmptyCoroutineContext,
+                        accessPolicy = PageAccessPolicy(enabledActions = PageActionKind.entries.toSet() - PageActionKind.Evaluate),
+                    ),
+                )
+            val tools = client.legacy("tools/list").result()["tools"]!!.jsonArray
+            val names = tools.map { it.jsonObject["name"]!!.jsonPrimitive.content }
+            assertTrue("capabilities" in names)
+            assertFalse("evaluate" in names)
+            val reply =
+                client.callTool(
+                    "evaluate",
+                    buildJsonObject {
+                        put("script", "deleteAccount()")
+                        put("approved", true)
+                    },
+                )
+            assertTrue(reply.isError)
+            assertTrue(page.evaluatedScripts.isEmpty())
+            val capabilities = client.callTool("capabilities")
+            val structured = capabilities.structured!!
+            assertFalse("evaluate" in structured["operations"]!!.jsonArray.map { it.jsonPrimitive.content })
+            assertEquals("false", structured["screenshot"]!!.jsonPrimitive.content)
+        }
+
     private val snapshotJson =
         """
         {"url":"https://shop.test/","title":"Shop","truncated":false,"nodes":[
@@ -126,9 +162,7 @@ class WebViewToolsTest {
                     },
                 )
 
-            // The generated click is `…?.click()`, which succeeds against nothing. An agent told it
-            // pressed checkout, when it did not, proceeds from a state that does not exist — and
-            // every later step is then wrong for a reason it cannot see.
+            // The presence wait gives slow pages a chance to render before strict click validation.
             assertTrue(result.isError, "a click that landed on nothing was reported as success")
             assertTrue("#checkout" in result.text, result.text)
         }

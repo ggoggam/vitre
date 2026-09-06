@@ -131,7 +131,7 @@ internal class CefBridgeChannel(
      * Forgets every waiting evaluation, because the document they were submitted against has gone.
      *
      * The continuations themselves are not resumed: `WebViewSerializer` is already watching for the
-     * navigation and will cancel and resubmit the one caller that is still interested. This only
+     * navigation and will report an unknown outcome to the caller. This only
      * stops the table growing by one entry per lost script for the life of the lane.
      */
     fun clearPending() = pending.clear()
@@ -203,7 +203,7 @@ internal class CefBridgeChannel(
      * Resumes the caller waiting on `<id>:<text>`, if one still is.
      *
      * A missing entry is the ordinary case rather than an error: the caller may have timed out, or
-     * `WebViewSerializer` may have given up on this document and resubmitted under a new id.
+     * `WebViewSerializer` may have reported that navigation made the outcome unknown.
      */
     private inline fun settle(
         body: String,

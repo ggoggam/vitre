@@ -107,6 +107,23 @@ swap gets trimmed. Either way, fewer lanes costs wall-clock and nothing else,
 because `FramePool.run` queues: six workflows in a pool of two run three deep rather than losing
 four of them.
 
+`run` admits at most one top-level workflow per configured lane. Remaining list entries do not
+allocate coroutines until admitted. Each engine also bounds extra fan-out workers across nested
+items; the current coroutine processes items inline when that budget is exhausted. Parents still
+release their lane first, so nested fan-out remains safe with one lane. The submitted list and final
+result arrays still occupy memory proportional to the number of items; these limits bound runnable
+work and variable copies, not the caller's input or result size.
+
+`pool.state` reports leased and unavailable lane IDs and whether the pool is closed. Cancellation
+returns lanes, including cancellation during channel handoff. A lane that fails its placeholder
+load is quarantined; recreate the platform pool to replace it. If no healthy lane remains, waiting
+borrowers fail rather than hanging. `close()` stops admission and wakes waiters while allowing
+existing borrowers to return their lanes. Platform hosts additionally dispose their WebViews and
+handlers when removed. Cancel ongoing workflow collection when tearing down its host.
+
+`resetAll()` reserves lanes through the same acquisition path, and concurrent resets serialize.
+It waits for active borrowers instead of replacing their documents underneath them.
+
 ## Lanes are borrowed, and a fan-out is a page barrier
 
 A workflow does not own a lane for its run. The pool is a `LaneSource`, and a `WorkflowEngine`
@@ -358,9 +375,10 @@ a lane that loads and a lane that does not.
 the page, and every platform drops a pending script callback when the document it was submitted
 against goes away — without ever invoking it. The reply is not late, it is never coming, and the
 step would otherwise wait out its whole script timeout and report a page that is visibly fine as a
-slow one. `WebViewSerializer.evaluate` therefore resubmits **once**, and only when it sees a new
-document commit rather than a result arrive. Once, because a second loss is a genuine fault and
-should look like one.
+slow one. `WebViewSerializer.evaluate` watches for the replacement document and reports
+`ScriptOutcomeUnknownException` when no answer arrives. It submits at most once: the original
+script may already have submitted the form, and replaying it could repeat that action. Callers
+should inspect the page before retrying a mutation; read-only `WaitFor` polling can retry safely.
 
 **4. `evaluateJavascript` never waits for a promise.** It hands back whatever the expression
 evaluated to, and a `Promise` serialises as `{}` — so an asynchronous step returns an empty object
@@ -466,10 +484,9 @@ the wait for the incoming document, and `'unsafe-eval'` spliced into `script-src
 so a strict-CSP site would load, answer the handshake, and then fail *every step* with a CSP
 violation.
 
-One piece of it was kept rather than deleted. The lane controller resubmitted a command once when
-the page navigated out from under it, and that trap is not about iframes at all — it is about a
-platform dropping a script callback when the document goes. It now lives in `WebViewSerializer`,
-where every controller gets it, and it is trap 3 above.
+Navigation-loss detection moved from the lane controller into `WebViewSerializer`, where every
+controller gets it. Its original resubmit-once behavior has since been replaced by an explicit
+unknown-outcome error to avoid replaying mutations; see trap 3 above.
 
 It also gave up one capability, and it is worth knowing what it was: nothing can put a foreign site
 *inside* a document of ours any more. An app that wanted its own chrome around a live third-party

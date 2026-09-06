@@ -14,6 +14,18 @@ import kotlin.test.assertTrue
  * back" — the use case every agent-driven run starts with.
  */
 class SnapshotStepTest {
+    @Test
+    fun an_invalid_host_redaction_selector_fails_the_step() =
+        runTest {
+            val controller =
+                FakeWebViewController().apply {
+                    nextEvalResult = { """{"error":"Invalid snapshot redaction selector"}""" }
+                }
+            val workflow = Workflow("snapshot", "snapshot", listOf(WorkflowStep.Snapshot("page")))
+            val result = WorkflowEngine(controller, EmptyCoroutineContext).run(workflow).toList().last()
+            assertEquals("Invalid snapshot redaction selector", assertIs<WorkflowEvent.Failed>(result).message)
+        }
+
     private val pageJson =
         """
         {"url":"https://shop.test/results","title":"Results","truncated":false,"nodes":[

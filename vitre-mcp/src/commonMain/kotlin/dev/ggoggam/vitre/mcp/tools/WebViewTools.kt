@@ -1,5 +1,6 @@
 package dev.ggoggam.vitre.mcp.tools
 
+import dev.ggoggam.vitre.agent.PageActionKind
 import dev.ggoggam.vitre.agent.PageDriver
 import dev.ggoggam.vitre.agent.PageDriverException
 import dev.ggoggam.vitre.agent.PageTarget
@@ -50,7 +51,12 @@ internal class ToolFailure(
 internal class WebViewTools(
     private val driver: PageDriver,
 ) {
-    fun definitions(): List<ToolDefinition> = DEFINITIONS
+    fun knows(name: String): Boolean = DEFINITIONS.any { it.name == name }
+
+    fun definitions(): List<ToolDefinition> =
+        DEFINITIONS.filter { definition ->
+            PageActionKind.entries.firstOrNull { it.toolName == definition.name }?.let(driver::isActionEnabled) ?: true
+        }
 
     suspend fun call(
         name: String,
@@ -73,20 +79,78 @@ internal class WebViewTools(
         args: JsonObject,
     ): ToolResult =
         when (name) {
-            "list_sessions" -> listSessions()
-            "snapshot" -> snapshot(args)
-            "navigate" -> navigate(args)
-            "click" -> click(args)
-            "type" -> type(args)
-            "wait_for" -> waitFor(args)
-            "extract" -> extract(args)
-            "extract_rows" -> extractRows(args)
-            "evaluate" -> evaluate(args)
-            "send_message" -> sendMessage(args)
-            "await_message" -> awaitMessage(args)
-            "acquire_lease" -> acquireLease(args)
-            "release_lease" -> releaseLease(args)
-            else -> throw ToolFailure("Unknown tool `$name`.")
+            "list_sessions" -> {
+                listSessions()
+            }
+
+            "capabilities" -> {
+                val capabilities = driver.capabilities(args.target())
+                ToolResult(
+                    capabilities.render(),
+                    structured =
+                        buildJsonObject {
+                            put("sessionId", capabilities.sessionId)
+                            put("operations", buildJsonArray { capabilities.operations.forEach { add(JsonPrimitive(it)) } })
+                            put("perActionAuthorization", capabilities.perActionAuthorization)
+                            put("screenshot", capabilities.screenshot)
+                            put("cookies", capabilities.cookies)
+                            put("nativeCookieStore", capabilities.nativeCookieStore)
+                            put("nativeRedirectFiltering", capabilities.nativeRedirectFiltering)
+                        },
+                )
+            }
+
+            "snapshot" -> {
+                snapshot(args)
+            }
+
+            "navigate" -> {
+                navigate(args)
+            }
+
+            "click" -> {
+                click(args)
+            }
+
+            "type" -> {
+                type(args)
+            }
+
+            "wait_for" -> {
+                waitFor(args)
+            }
+
+            "extract" -> {
+                extract(args)
+            }
+
+            "extract_rows" -> {
+                extractRows(args)
+            }
+
+            "evaluate" -> {
+                evaluate(args)
+            }
+
+            "send_message" -> {
+                sendMessage(args)
+            }
+
+            "await_message" -> {
+                awaitMessage(args)
+            }
+
+            "acquire_lease" -> {
+                acquireLease(args)
+            }
+
+            "release_lease" -> {
+                releaseLease(args)
+            }
+
+            else -> {
+                throw ToolFailure("Unknown tool `$name`.")
+            }
         }
 
     // ── Tools ──────────────────────────────────────────────────────────────────────────────────
@@ -252,6 +316,16 @@ internal class WebViewTools(
     private companion object {
         val DEFINITIONS: List<ToolDefinition> =
             listOf(
+                ToolDefinition(
+                    name = "capabilities",
+                    title = "Inspect session capabilities",
+                    description = PageToolDocs.CAPABILITIES,
+                    inputSchema =
+                        toolSchema {
+                            stringProp("session", PageToolDocs.SESSION)
+                            stringProp("lease", PageToolDocs.LEASE)
+                        },
+                ),
                 ToolDefinition(
                     name = "list_sessions",
                     title = "List WebView sessions",

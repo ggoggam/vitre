@@ -1,8 +1,7 @@
 package dev.ggoggam.vitre.core.webview
 
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.atomics.AtomicLong
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
@@ -20,15 +19,10 @@ import kotlin.concurrent.atomics.incrementAndFetch
  * and names this controller's [AsyncScript.nonce], and a claimed message never reaches the inbox
  * at all. See `docs/ASYNC-BRIDGE.md` for the whole argument.
  *
- * The subtlety worth reading twice is [clear] versus `WebViewSerializer`'s resubmit-once. A
- * navigation kills the page's promises, so waits must fail promptly rather than sit out the whole
- * script timeout — but a navigation that lands while the *evaluate itself* is still in flight is
- * exactly the case the serializer survives by resubmitting the script against the new document,
- * and that resubmitted script will settle under the same cid. So an entry is *armed* only once its
- * caller has seen the pending sentinel and is genuinely waiting on a promise the old document
- * owned: [clear] fails armed entries and leaves in-flight ones for the resubmit to answer. The
- * residual window — a navigation between the sentinel arriving and the arm — degrades to the
- * ordinary timeout, which is the pre-existing behaviour for every orphaned wait.
+ * A navigation invalidates all submitted entries, including ones whose raw evaluate has not yet
+ * returned the pending sentinel. This closes the gap between submission and starting to await a
+ * promise: a late sentinel observes the same unknown outcome as a wait already in progress.
+ * Scripts are never automatically replayed against a replacement document.
  *
  * Thread contract: [evaluate] is called from caller coroutines; [deliver] and [clear] from
  * platform callbacks on the WebView thread. The table is copy-on-write for that reason, and
@@ -52,8 +46,9 @@ internal class ScriptResults(
      * `WebViewSerializer` warns about — a promise that resolves from a `fetch` needs the
      * renderer's main thread, and the renderer's main thread is what the lock would be sitting on.
      *
-     * No race in the gap between registration and settling: the entry is registered before the
-     * script is submitted, so a promise that settles instantly finds its deferred already there.
+     * [evaluateRaw] invokes its submission callback on the WebView thread immediately before
+     * submitting the wrapped script. Registration therefore precedes even instant settlements,
+     * while a script queued behind an earlier navigation is not invalidated before it starts.
      *
      * @throws ScriptFailedException if the promise rejected, with the page's own message.
      * @throws ScriptTimeoutException if the promise neither settles within [timeoutMs] nor
@@ -62,20 +57,18 @@ internal class ScriptResults(
     suspend fun evaluate(
         script: String,
         timeoutMs: Long,
-        evaluateRaw: suspend (String) -> String,
+        evaluateRaw: suspend (String, onSubmitted: () -> Unit) -> String,
     ): String {
         val cid = cids.incrementAndFetch()
-        val entry = Entry(CompletableDeferred(), armed = false)
-        update { it + (cid to entry) }
+        val entry = Entry(CompletableDeferred())
         try {
-            val immediate = evaluateRaw(asyncScript.wrap(script, cid))
+            val immediate = evaluateRaw(asyncScript.wrap(script, cid)) { update { it + (cid to entry) } }
             if (immediate != asyncScript.pendingResult(cid)) return immediate
-            arm(cid)
-            return try {
-                withTimeout(timeoutMs) { entry.deferred.await() }
-            } catch (_: TimeoutCancellationException) {
-                throw ScriptTimeoutException("Promise did not settle within ${timeoutMs}ms")
-            }
+            return withTimeoutOrNull(timeoutMs) { entry.deferred.await() }
+                ?: throw ScriptOutcomeUnknownException(
+                    "Promise did not settle within ${timeoutMs}ms; it may already have taken effect. " +
+                        "Inspect the page before retrying.",
+                )
         } finally {
             update { it - cid }
         }
@@ -110,36 +103,24 @@ internal class ScriptResults(
     }
 
     /**
-     * A new document committed: promises the old one owned can never settle now, so every armed
-     * wait fails immediately rather than sitting out its timeout. Entries whose evaluate is still
-     * in flight stay — `WebViewSerializer` may be about to resubmit their script against the new
-     * document, and that run settles under the same cid.
+     * A new document committed: invalidate every pending promise, including evaluates still
+     * waiting for the platform's immediate callback. An already-delivered result remains valid.
      */
     fun clear() {
         while (true) {
             val current = pending.load()
-            val kept = current.filterValues { !it.armed }
-            if (kept.size == current.size) return
-            if (pending.compareAndSet(current, kept)) {
+            if (current.isEmpty()) return
+            if (pending.compareAndSet(current, emptyMap())) {
                 for ((_, entry) in current) {
-                    if (entry.armed) {
-                        entry.deferred.completeExceptionally(
-                            ScriptTimeoutException("The page navigated away while a promise was settling"),
-                        )
-                    }
+                    entry.deferred.completeExceptionally(
+                        ScriptOutcomeUnknownException(
+                            "The page navigated away while a promise was settling; it may already have taken effect. " +
+                                "Inspect the page before retrying.",
+                        ),
+                    )
                 }
                 return
             }
-        }
-    }
-
-    /** Marks [cid]'s caller as genuinely waiting on a promise — see [clear] for what that changes. */
-    private fun arm(cid: Long) {
-        while (true) {
-            val current = pending.load()
-            val entry = current[cid] ?: return
-            if (entry.armed) return
-            if (pending.compareAndSet(current, current + (cid to entry.copy(armed = true)))) return
         }
     }
 
@@ -161,6 +142,5 @@ internal class ScriptResults(
 
     private data class Entry(
         val deferred: CompletableDeferred<String>,
-        val armed: Boolean,
     )
 }
