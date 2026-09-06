@@ -6,6 +6,7 @@ package dev.ggoggam.vitre.core.workflow
  *
  * Passwords, one-time codes and payment-card autocomplete fields are always redacted. [redactSelectors]
  * additionally redacts matching elements and their descendants, including text, names and links.
+ * Redacting a selected option also masks the value copied onto its parent select control.
  * Invalid selectors fail the snapshot. Redaction applies to snapshots only: explicit extraction and
  * arbitrary JavaScript remain separate capabilities that the host must control.
  */
