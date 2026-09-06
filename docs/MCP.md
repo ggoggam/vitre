@@ -26,7 +26,9 @@ snapshot  →  heading "Search results"          [ref=e1]
 click(ref=e6)
 ```
 
-The agent never writes a selector. It reads handles out of a snapshot and passes them back.
+The agent reads handles out of a snapshot and passes them back. Handles above are abbreviated for
+readability: real handles contain a document namespace. Treat the entire string as opaque and copy it
+verbatim; do not construct `e1`, strip the prefix, or reuse a handle in another WebView session.
 
 ## Handles
 
@@ -37,7 +39,9 @@ resolving at exactly the moment it stops meaning anything.
 
 Two rules make a wrong action impossible rather than merely unlikely:
 
-- **Numbers are never reused.** A second snapshot mints fresh refs for elements it has not seen and
+- **Document namespaces and numbers are never reused.** Native code supplies a fresh UUID namespace
+  when a registry is created. The registry also tracks its `Document`, covering document replacement
+  that retains the `Window`. A second snapshot mints fresh refs for elements it has not seen and
   keeps existing refs for elements it has. Were handles indices into the latest snapshot, an agent
   that snapshotted, thought, and then acted on `e3` would act on whatever had since taken third
   place — silently, and plausibly.
@@ -52,8 +56,21 @@ Two rules make a wrong action impossible rather than merely unlikely:
   | `unknown` | This document never issued that handle — it is from a previous page. |
   | `detached` | The element existed and has been removed. Snapshot again; the page has changed. |
 
-That vetting costs one extra round trip, and only for handle-addressed steps. Selector-addressed
-workflows written before handles existed pay nothing.
+Validation and the action execute in one JavaScript evaluation and return a structured status/result
+envelope. Navigation cannot happen between a native validation callback and a later action callback.
+Detached handles also resolve to null in `exists` conditions.
+
+### Snapshot redaction
+
+Passwords, password autocomplete fields, one-time codes and payment-card autocomplete fields are
+redacted by default. Ordinary form values are limited to 200 characters. Hosts can configure
+`SnapshotPolicy(valueLimit = 100, redactSelectors = listOf(".private", "#account-number"))` on
+`WorkflowEngine`, `PageDriver`, or `McpServer`. MCP and Koog share their driver's policy; remote tool
+arguments cannot disable it. Selectors redact matching subtrees, including accessible names, text,
+values and links. Invalid selectors fail the snapshot instead of returning unredacted content.
+
+This policy covers snapshots, not explicit `extract`, arbitrary JavaScript, page URLs or titles.
+Hosts should expose those capabilities according to their own data-access policy.
 
 ### A bug worth recording
 
