@@ -42,9 +42,16 @@ owns its WebView until release/expiry. Cancellation propagates; denial and autho
 `PageDriverException`, MCP tool errors, or Koog validation failures. Each call needs its own decision.
 
 The request is bound to the controller execution will use. A lease can still pin an older controller
-after a session has been rebuilt, and the authorizer sees that controller. If registration changes
-while approval or execution ownership is pending, the call fails and asks for a fresh review. Once
-execution begins it remains pinned to the approved controller; it never switches to a replacement.
+after a session has been rebuilt, and the authorizer sees that controller. Registration is checked
+after approval and again when a lease or a multi-step sequence acquires execution ownership. A change
+at those boundaries fails the call and asks for a fresh review. All execution remains pinned to the
+approved controller; it never switches to a replacement.
+
+Standalone waits and arbitrary evaluations use the controller's normal operation ordering without
+holding an extra lock across completion. Another caller can send the message, mutate the page, or
+resolve the promise they need. A registration change while such an operation is already queued does
+not revoke it: it can finish on the originally approved controller. Callers requiring uninterrupted
+sequences should use an explicit lease, which intentionally keeps ownership while waiting.
 
 ## Capability discovery
 

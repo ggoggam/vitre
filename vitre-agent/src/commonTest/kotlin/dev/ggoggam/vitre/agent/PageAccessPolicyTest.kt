@@ -15,6 +15,7 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -28,7 +29,11 @@ class PageAccessPolicyTest {
     private class Page : WebViewController {
         val effects = mutableListOf<String>()
         private val order = WebViewOrdering()
-        override val bridge = DefaultWebViewBridge(WebViewInbox()) { evaluateJs(it) }
+        private val inbox = WebViewInbox()
+        override val bridge = DefaultWebViewBridge(inbox) { evaluateJs(it) }
+        var respond: suspend (String) -> String = { "\"result\"" }
+
+        fun reply(message: String) = inbox.deliver(message)
 
         override suspend fun navigate(url: String) = order.ordered { effects += url }
 
@@ -37,16 +42,101 @@ class PageAccessPolicyTest {
             baseUrl: String?,
         ) = order.ordered { effects += html }
 
-        override suspend fun evaluateJs(script: String): String =
-            order.ordered {
-                effects += script
-                "\"result\""
-            }
+        override suspend fun evaluateJs(script: String): String {
+            order.ordered { effects += script }
+            // Like the real serializer, delayed promise settlement occurs outside operation order.
+            return respond(script)
+        }
 
         override suspend fun <T> exclusively(block: suspend (ExclusiveAccess) -> T): T = order.exclusively(block)
 
         override fun close() = Unit
     }
+
+    @Test
+    fun an_unleased_bridge_wait_allows_a_concurrent_message_that_produces_its_reply() =
+        runTest {
+            val page =
+                Page().apply {
+                    respond = {
+                        if ("MessageEvent" in it) reply("""{"id":"reply-1","type":"reply","payload":"done"}""")
+                        "null"
+                    }
+                }
+            val driver = PageDriver(WebViewSessions().apply { register("main", page) }, this, EmptyCoroutineContext)
+            val waiting = async { driver.awaitMessage("reply", timeoutMs = 1000) }
+            runCurrent()
+            assertFalse(waiting.isCompleted)
+            withTimeout(500) { driver.postMessage("request") }
+            assertTrue("done" in waiting.await())
+        }
+
+    @Test
+    fun an_unleased_promise_can_be_resolved_by_a_followup_evaluation() =
+        runTest {
+            val settled = CompletableDeferred<String>()
+            val page =
+                Page().apply {
+                    respond = {
+                        if (it == "waitForHost()") {
+                            settled.await()
+                        } else {
+                            settled.complete("\"finished\"")
+                            "null"
+                        }
+                    }
+                }
+            val driver = PageDriver(WebViewSessions().apply { register("main", page) }, this, EmptyCoroutineContext)
+            val waiting = async { driver.evaluate("waitForHost()") }
+            runCurrent()
+            assertFalse(waiting.isCompleted)
+            withTimeout(500) { driver.evaluate("resolveHost()") }
+            assertEquals("finished", waiting.await())
+        }
+
+    @Test
+    fun an_unleased_standalone_selector_wait_allows_host_page_mutation() =
+        runTest {
+            var ready = false
+            val page =
+                Page().apply {
+                    respond = {
+                        if (it.endsWith("!==null")) {
+                            ready.toString()
+                        } else {
+                            ready = true
+                            "null"
+                        }
+                    }
+                }
+            val driver = PageDriver(WebViewSessions().apply { register("main", page) }, this, EmptyCoroutineContext)
+            val waiting = async { driver.waitFor(css("#created"), timeoutMs = 1000) }
+            runCurrent()
+            assertFalse(waiting.isCompleted)
+            driver.evaluate("createElement()")
+            waiting.await()
+            assertTrue(ready)
+        }
+
+    @Test
+    fun a_single_operation_queued_during_replacement_stays_on_the_approved_controller() =
+        runTest {
+            val original = Page()
+            val replacement = Page()
+            val sessions = WebViewSessions().apply { register("main", original) }
+            val unlock = CompletableDeferred<Unit>()
+            val holder = launch { original.exclusively { unlock.await() } }
+            runCurrent()
+            val driver = PageDriver(sessions, this, EmptyCoroutineContext)
+            val call = async { driver.evaluate("document.title") }
+            runCurrent()
+            sessions.register("main", replacement)
+            unlock.complete(Unit)
+            holder.join()
+            assertEquals("result", call.await())
+            assertEquals(listOf("document.title"), original.effects)
+            assertTrue(replacement.effects.isEmpty())
+        }
 
     @Test
     fun all_page_actions_and_lease_acquisition_are_authorized_before_effects() =

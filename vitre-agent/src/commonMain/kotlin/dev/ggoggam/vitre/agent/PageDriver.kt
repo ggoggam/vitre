@@ -387,7 +387,16 @@ class PageDriver(
             requireSameRegistration(session)
             runWorkflow(controller, steps)
         }
-        return if (lease != null) lease.use(run) else controller.exclusively { run() }
+        return when {
+            lease != null -> lease.use(run)
+
+            // Navigation/title and wait/action pairs need a shared document. A standalone
+            // passive wait or arbitrary expression must retain the controller's own ordering:
+            // its completion may depend on another caller interacting with this same page.
+            steps.size > 1 -> controller.exclusively { run() }
+
+            else -> run()
+        }
     }
 
     private fun requireSameRegistration(session: WebViewSession) {
