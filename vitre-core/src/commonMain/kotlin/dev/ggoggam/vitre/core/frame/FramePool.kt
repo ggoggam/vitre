@@ -59,9 +59,15 @@ class FramePool internal constructor(
      * is both at once, and hands lanes to waiting receivers in the order they arrived.
      */
     private val free =
-        Channel<Lane>(Channel.UNLIMITED).apply {
+        Channel<Lane>(Channel.UNLIMITED, onUndeliveredElement = ::returnUndeliveredLane).apply {
             for (id in laneIds) trySend(Lane(id, lanes.getValue(id)))
         }
+
+    // A receive can consume a lane and then throw cancellation before the borrower resumes. In
+    // that case acquire's try/finally never sees it. The channel returns ownership here instead.
+    private fun returnUndeliveredLane(lane: Lane) {
+        free.trySend(lane)
+    }
 
     /** @throws IllegalArgumentException if [id] is not one of [laneIds]. */
     fun lane(id: String): WebViewController =
