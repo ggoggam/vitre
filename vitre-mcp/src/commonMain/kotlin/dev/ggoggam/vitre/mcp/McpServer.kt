@@ -4,6 +4,7 @@ import dev.ggoggam.vitre.agent.PageDriver
 import dev.ggoggam.vitre.agent.PageToolDocs
 import dev.ggoggam.vitre.agent.session.SessionLeases
 import dev.ggoggam.vitre.agent.session.WebViewSessions
+import dev.ggoggam.vitre.core.workflow.SnapshotPolicy
 import dev.ggoggam.vitre.mcp.protocol.Era
 import dev.ggoggam.vitre.mcp.protocol.FALLBACK_LEGACY_VERSION
 import dev.ggoggam.vitre.mcp.protocol.JsonRpcErrors
@@ -72,6 +73,8 @@ class McpServer(
      * thread pool turns every ordering assertion into a race.
      */
     engineContext: CoroutineContext = Dispatchers.Default,
+    /** Snapshot limits/redaction selected by the host, never by remote tool arguments. */
+    snapshotPolicy: SnapshotPolicy = SnapshotPolicy(),
 ) {
     private val serverInfo = ServerInfo(name, version)
 
@@ -79,7 +82,7 @@ class McpServer(
      * The page semantics, shared with every other adapter. This server owns the protocol around
      * them and nothing below it — see [WebViewTools].
      */
-    val driver: PageDriver = PageDriver(sessions, SessionLeases(scope), engineContext)
+    val driver: PageDriver = PageDriver(sessions, SessionLeases(scope), engineContext, snapshotPolicy)
     private val tools = WebViewTools(driver)
 
     /**

@@ -28,7 +28,7 @@ object PageToolDocs {
             "interleaved with another caller's."
 
     const val REF: String =
-        "Handle from a previous `snapshot` of the current page, e.g. \"e7\". Prefer this: it names " +
+        "Opaque handle copied verbatim from a `snapshot` of this session's current document. Prefer this: it names " +
             "an element you have actually seen, and fails loudly if the page has changed under you."
 
     const val CSS: String =

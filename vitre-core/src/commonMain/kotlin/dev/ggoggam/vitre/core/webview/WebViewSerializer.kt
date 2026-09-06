@@ -5,7 +5,6 @@ import dev.ggoggam.vitre.core.concurrent.WebViewOrdering
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -15,7 +14,7 @@ import kotlinx.coroutines.flow.transform
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** How long a single script evaluation may take before the caller is released. */
 const val DEFAULT_SCRIPT_TIMEOUT_MS: Long = 15_000L
@@ -90,20 +89,16 @@ internal class WebViewSerializer(
         ordered {
             var started = false
             val outcome =
-                try {
-                    withTimeout(timeoutMs) {
-                        signals
-                            .onSubscription { withContext(dispatcher) { startLoad() } }
-                            .transform { signal ->
-                                when (signal) {
-                                    Signal.Started -> started = true
-                                    is Signal.Finished -> if (started) emit(signal)
-                                }
-                            }.first()
-                    }
-                } catch (_: TimeoutCancellationException) {
-                    throw PageLoadException("Timed out after ${timeoutMs}ms waiting for the page to load")
-                }
+                withTimeoutOrNull(timeoutMs) {
+                    signals
+                        .onSubscription { withContext(dispatcher) { startLoad() } }
+                        .transform { signal ->
+                            when (signal) {
+                                Signal.Started -> started = true
+                                is Signal.Finished -> if (started) emit(signal)
+                            }
+                        }.first()
+                } ?: throw PageLoadException("Timed out after ${timeoutMs}ms waiting for the page to load")
             outcome.errorMessage?.let { throw PageLoadException(it) }
         }
     }
@@ -116,33 +111,29 @@ internal class WebViewSerializer(
      * *we* start; a page that redirects, meta-refreshes, or navigates out from under a click starts
      * its own, and the script submitted just before it is never answered.
      *
-     * So a lost script is **resubmitted once**, against the document that replaced the one it was
-     * lost to. Once, because a second loss is a genuine fault and should look like one — and
-     * waiting out [timeoutMs] instead would report a page that is visibly fine as a slow one.
+     * Each call submits at most once. A lost answer does not prove that the script had no effect:
+     * replaying a click, form submission, or fetch could repeat a mutation. Report an unknown
+     * outcome and let the caller inspect the page before deciding what to do. Read-only polling
+     * can retry at the workflow layer, where the operation's meaning is known.
      *
-     * The caveat is [submit]'s to carry: a resubmitted script runs a second time, so a step that
-     * navigates *by* running (a click on a link) can act twice. In practice the platform answers a
-     * click's own evaluation before the navigation it triggers commits, and it is the step *after*
-     * the click that gets lost; a caller for whom that is not good enough should hold
-     * [exclusively] and drive the navigation itself.
-     *
-     * @throws ScriptTimeoutException if no result arrives within [timeoutMs], or if the page
-     *   navigated away from both attempts.
+     * @throws ScriptOutcomeUnknownException if no result arrives within [timeoutMs], or if the
+     *   document is replaced before the callback returns. The script may already have taken effect.
      */
     suspend fun evaluate(
         timeoutMs: Long = DEFAULT_SCRIPT_TIMEOUT_MS,
         submit: (CancellableContinuation<String>) -> Unit,
     ): String =
         ordered {
-            try {
-                withTimeout(timeoutMs) {
-                    submitOnce(submit)
-                        ?: submitOnce(submit)
-                        ?: throw ScriptTimeoutException("The page navigated away from two attempts at the script")
-                }
-            } catch (_: TimeoutCancellationException) {
-                throw ScriptTimeoutException("Script did not return within ${timeoutMs}ms")
-            }
+            withTimeoutOrNull(timeoutMs) {
+                submitOnce(submit)
+                    ?: throw ScriptOutcomeUnknownException(
+                        "The page navigated away before the script returned; it may already have taken effect. " +
+                            "Inspect the page before retrying.",
+                    )
+            } ?: throw ScriptOutcomeUnknownException(
+                "Script did not return within ${timeoutMs}ms; it may already have taken effect. " +
+                    "Inspect the page before retrying.",
+            )
         }
 
     /**
@@ -153,12 +144,11 @@ internal class WebViewSerializer(
      *  - The watcher subscribes *before* the script is submitted, and the signal flow has no
      *    replay, so the only [Signal.Started] it can see is one that arrived after the script went
      *    in. Without that ordering a load already in flight would look like the script being lost,
-     *    and every evaluation immediately after a navigation would run twice.
+     *    and every evaluation immediately after a navigation would incorrectly fail.
      *  - It resolves on the [Signal.Finished] that *follows* that start, in one uninterrupted
      *    collection, rather than returning on the start and subscribing again. Returning early
-     *    would hand the retry a document still being parsed — an `Extract` against half a DOM
-     *    returns nothing and looks like a selector that stopped matching — and re-subscribing
-     *    afterwards would race the finish it is waiting for.
+     *    would make a caller's next observation race a document still being parsed, and
+     *    re-subscribing afterwards would race the finish it is waiting for.
      *
      * A script that answers late, after the new document has started but before it settles, still
      * wins: whichever completes first is the one taken.

@@ -119,9 +119,12 @@ past stale results, and an unclaimed result is dropped by `forget`/`clear` inste
 `unread`.
 
 `clear()` runs where `inbox.clear()` runs today — `onPageStarted` / `didStartProvisionalNavigation`
-— and fails pending waits with `ScriptTimeoutException("the document navigated away mid-settle")`
-immediately, instead of the caller waiting out the full script timeout as the current
-`evaluateAndSettle` KDoc concedes it must.
+— and fails submitted waits with `ScriptOutcomeUnknownException` immediately. This includes entries
+whose raw evaluation has not returned the pending sentinel yet, closing the navigation/arming
+race. Registration happens immediately before native submission, so navigation does not invalidate
+scripts still waiting for their turn. The exception extends `ScriptTimeoutException` for existing
+read-only polling callers, but its message makes clear that a mutation may already have taken effect. No script is replayed
+automatically. Caller cancellation and outer deadlines propagate unchanged.
 
 ### Frame- and origin-gated delivery, tagged at the platform edge — landed
 

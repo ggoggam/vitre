@@ -88,11 +88,13 @@ data class SnapshotNode(
     val tag: String = "",
     /** Nesting depth among *included* elements, for indenting the rendered form. */
     val depth: Int = 0,
-    /** The live `value` property of a form control — what the user would see typed in it. */
+    /** The bounded live form value, or `[redacted]` for sensitive controls. See [SnapshotPolicy]. */
     val value: String? = null,
     val checked: Boolean? = null,
     val disabled: Boolean? = null,
     val href: String? = null,
+    /** The host's snapshot policy suppressed this element's content. */
+    val redacted: Boolean = false,
 ) {
     internal fun render(): String =
         buildString {
