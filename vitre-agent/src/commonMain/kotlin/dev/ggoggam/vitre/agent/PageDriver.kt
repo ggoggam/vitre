@@ -10,6 +10,7 @@ import dev.ggoggam.vitre.agent.session.WebViewSessions
 import dev.ggoggam.vitre.core.webview.WebViewController
 import dev.ggoggam.vitre.core.workflow.Locator
 import dev.ggoggam.vitre.core.workflow.PageSnapshot
+import dev.ggoggam.vitre.core.workflow.SnapshotPolicy
 import dev.ggoggam.vitre.core.workflow.Workflow
 import dev.ggoggam.vitre.core.workflow.WorkflowEngine
 import dev.ggoggam.vitre.core.workflow.WorkflowEvent
@@ -95,6 +96,8 @@ class PageDriver(
      * into a race.
      */
     private val engineContext: CoroutineContext = Dispatchers.Default,
+    /** Host-owned snapshot redaction; shared by MCP and Koog when they share this driver. */
+    private val snapshotPolicy: SnapshotPolicy = SnapshotPolicy(),
 ) {
     /**
      * Builds a driver with a lease registry of its own, for a host with only one adapter.
@@ -112,7 +115,8 @@ class PageDriver(
         sessions: WebViewSessions,
         scope: CoroutineScope,
         engineContext: CoroutineContext = Dispatchers.Default,
-    ) : this(sessions, SessionLeases(scope), engineContext)
+        snapshotPolicy: SnapshotPolicy = SnapshotPolicy(),
+    ) : this(sessions, SessionLeases(scope), engineContext, snapshotPolicy)
 
     // ── Sessions and leases ────────────────────────────────────────────────────────────────────
 
@@ -360,7 +364,7 @@ class PageDriver(
     ): Map<String, String> {
         var variables: Map<String, String> = emptyMap()
         var failure: String? = null
-        WorkflowEngine(controller, engineContext)
+        WorkflowEngine(controller, engineContext, snapshotPolicy)
             .run(Workflow(id = "agent", name = "page action", steps = steps))
             .collect { event ->
                 when (event) {

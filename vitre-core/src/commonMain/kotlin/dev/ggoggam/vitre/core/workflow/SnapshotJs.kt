@@ -1,20 +1,20 @@
 package dev.ggoggam.vitre.core.workflow
 
 import dev.ggoggam.vitre.core.bridge.jsString
+import kotlin.uuid.ExperimentalUuidApi
+import kotlin.uuid.Uuid
 
 /**
  * The page-side half of snapshots and handles.
  *
  * Handles have to live in the page, because the only thing that can hold a reference to a DOM node
- * is the DOM's own JavaScript context. That gives their lifetime for free and gives it correctly: a
- * navigation replaces the context, so every handle from the old document stops resolving at exactly
- * the moment it stops meaning anything. Keeping a table on the native side instead would leave
- * handles that still look valid and now point at nothing.
+ * is the DOM's own JavaScript context. The registry records its owning Document and a native-minted
+ * namespace, so another document or WebView cannot accidentally issue a matching handle.
  *
  * Two rules the registry keeps, both of which exist to make a wrong action impossible rather than
  * merely unlikely:
  *
- *  - **Numbers are never reused.** A second snapshot mints fresh refs for elements it has not seen
+ *  - **Namespaced numbers are never reused.** A second snapshot mints fresh refs for elements it has not seen
  *    and keeps the existing ref for elements it has. If handles were indices into the latest
  *    snapshot, an agent that snapshotted, thought, and then acted on `e3` would act on whatever
  *    element had since taken third place — silently, and plausibly.
@@ -26,10 +26,13 @@ internal object SnapshotJs {
     /** The page-global the registry hangs off. Namespaced to avoid colliding with the page. */
     private const val REGISTRY = "window.__vitre"
 
-    /** Creates the registry if this document has not got one yet. */
-    private const val ENSURE_REGISTRY =
-        "var W=$REGISTRY||($REGISTRY={});" +
-            "if(!W.byRef){W.byRef=new Map();W.byEl=new WeakMap();W.next=1;}"
+    /** A native-generated namespace prevents refs from rebinding in another document or WebView. */
+    @OptIn(ExperimentalUuidApi::class)
+    private fun ensureRegistry(): String =
+        "var W=$REGISTRY;" +
+            "if(!W||W.document!==document||!W.namespace){" +
+            "W=$REGISTRY={document:document,namespace:${jsString(Uuid.random().toString())}," +
+            "byRef:new Map(),byEl:new WeakMap(),next:1};}"
 
     /**
      * An expression for the element [ref] names, or `null`.
@@ -43,19 +46,32 @@ internal object SnapshotJs {
      *
      * Deliberately does not throw. Android's `evaluateJavascript` reports a thrown exception as a
      * `null` result and nothing else, so a throw here would reach the engine as an indistinguishable
-     * blank on one platform and an error on the other. The engine asks [statusOf] first instead, and
-     * gets the same answer on both.
+     * blank on one platform and an error on the other. The engine uses [guarded] to validate and
+     * act in one evaluation, returning a structured result consistently on every platform.
      */
-    fun resolve(ref: String): String = "(($REGISTRY&&$REGISTRY.byRef?$REGISTRY.byRef.get(${jsString(ref)}):null)||null)"
+    fun resolve(ref: String): String =
+        "(function(){var W=$REGISTRY;" +
+            "var e=W&&W.document===document&&W.byRef?W.byRef.get(${jsString(ref)}):null;" +
+            "return e&&e.isConnected?e:null;})()"
 
     /** An expression returning `"ok"`, `"no-snapshot"`, `"unknown"` or `"detached"` for [ref]. */
     fun statusOf(ref: String): String =
         "(function(){var W=$REGISTRY;" +
-            "if(!W||!W.byRef)return 'no-snapshot';" +
+            "if(!W||W.document!==document||!W.byRef)return 'no-snapshot';" +
             "var e=W.byRef.get(${jsString(ref)});" +
             "if(!e)return 'unknown';" +
             "if(!e.isConnected)return 'detached';" +
             "return 'ok';})()"
+
+    /** Validate and execute in one JavaScript turn; a navigation cannot slip between callbacks. */
+    fun guarded(
+        refs: List<String>,
+        expression: String,
+    ): String =
+        "(function(){" +
+            refs.distinct().joinToString("") { ref ->
+                "var status=${statusOf(ref)};if(status!=='ok')return {handle:${jsString(ref)},status:status};"
+            } + "return {status:'ok',value:($expression)};})()"
 
     /** Turns a [statusOf] result into the sentence a caller should be told, or null if it resolved. */
     fun explain(
@@ -102,11 +118,16 @@ internal object SnapshotJs {
     fun snapshot(
         maxNodes: Int,
         nameLimit: Int,
+        policy: SnapshotPolicy = SnapshotPolicy(),
     ): String =
         """
         (function(){
-        $ENSURE_REGISTRY
-        var MAX=$maxNodes,NAMELEN=$nameLimit,HREFLEN=200;
+        ${ensureRegistry()}
+        var MAX=$maxNodes,NAMELEN=$nameLimit,HREFLEN=200,VALUELEN=${policy.valueLimit};
+        var REDACT=[${policy.redactSelectors.joinToString(",", transform = ::jsString)}];
+        // Validate before collecting anything; malformed host policy must never disable masking.
+        try{REDACT.forEach(function(s){document.querySelector(s);});}
+        catch(e){return {error:'Invalid snapshot redaction selector'};}
         var out=[],truncated=false;
         var SKIP={SCRIPT:1,STYLE:1,NOSCRIPT:1,TEMPLATE:1,HEAD:1,SVG:1,CANVAS:1,IFRAME:1};
         var HEADING={H1:1,H2:1,H3:1,H4:1,H5:1,H6:1};
@@ -119,6 +140,25 @@ internal object SnapshotJs {
         function attr(el,n){return el.getAttribute?el.getAttribute(n):null;}
         function clean(s){return (s||'').replace(/\s+/g,' ').trim();}
         function cut(s,n){s=clean(s);return s.length>n?s.slice(0,n)+'…':s;}
+        function sensitive(el){
+          if((attr(el,'type')||'').toLowerCase()==='password')return true;
+          var tokens=(attr(el,'autocomplete')||'').toLowerCase().split(/\s+/);
+          return tokens.some(function(t){return t==='current-password'||t==='new-password'||
+            t==='one-time-code'||t.indexOf('cc-')===0;});
+        }
+        function redacted(el){
+          return sensitive(el)||REDACT.some(function(s){return !!el.closest(s);});
+        }
+        function safeText(el){
+          if(redacted(el))return '[redacted]';
+          var text='';
+          for(var i=0;i<el.childNodes.length;i++){
+            var child=el.childNodes[i];
+            if(child.nodeType===3)text+=child.nodeValue;
+            else if(child.nodeType===1)text+=safeText(child);
+          }
+          return text;
+        }
 
         function visible(el){
           var s=window.getComputedStyle?window.getComputedStyle(el):null;
@@ -163,10 +203,10 @@ internal object SnapshotJs {
           try{
             if(el.id&&window.CSS&&CSS.escape){
               var l=document.querySelector('label[for="'+CSS.escape(el.id)+'"]');
-              if(l)return l.textContent;
+              if(l)return safeText(l);
             }
             var p=el.closest?el.closest('label'):null;
-            if(p)return p.textContent;
+            if(p)return safeText(p);
           }catch(e){}
           return '';
         }
@@ -177,32 +217,36 @@ internal object SnapshotJs {
             var lb=attr(el,'aria-labelledby');
             if(lb){
               n=lb.split(/\s+/).map(function(i){
-                var e=document.getElementById(i);return e?e.textContent:'';
+                var e=document.getElementById(i);return e?safeText(e):'';
               }).join(' ');
             }
           }
           if(!clean(n)&&LABELLED[role])n=labelText(el)||attr(el,'placeholder');
           if(!clean(n)&&role==='image')n=attr(el,'alt');
           if(!clean(n))n=attr(el,'title');
-          if(!clean(n))n=el.textContent;
+          if(!clean(n))n=safeText(el);
           return cut(n,NAMELEN);
         }
 
         function refFor(el){
           var r=W.byEl.get(el);
-          if(!r){r='e'+(W.next++);W.byEl.set(el,r);W.byRef.set(r,el);}
+          if(!r){r=W.namespace+':e'+(W.next++);W.byEl.set(el,r);W.byRef.set(r,el);}
           return r;
         }
 
         function push(el,role,name,depth){
+          var mask=redacted(el);
+          if(mask)name='[redacted]';
           var node={ref:refFor(el),role:role,name:name,tag:el.tagName.toLowerCase(),depth:depth};
+          if(mask)node.redacted=true;
           var t=el.tagName.toUpperCase();
           if(t==='INPUT'||t==='TEXTAREA'||t==='SELECT'){
-            node.value=String(el.value==null?'':el.value);
+            var value=mask?'[redacted]':String(el.value==null?'':el.value);
+            node.value=mask?value:(value.length>VALUELEN?value.slice(0,VALUELEN)+'…':value);
             if(el.disabled)node.disabled=true;
             if(role==='checkbox'||role==='radio')node.checked=!!el.checked;
           }
-          if(t==='A'){var h=attr(el,'href');if(h)node.href=cut(h,HREFLEN);}
+          if(t==='A'&&!mask){var h=attr(el,'href');if(h)node.href=cut(h,HREFLEN);}
           out.push(node);
         }
 

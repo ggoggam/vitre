@@ -1,6 +1,7 @@
 # Tools every vitre task needs. The JDK the Gradle and ktlint tasks want on a CI runner is in
 # mise.ci.toml, which mise merges over this file only when MISE_ENV=ci.
 [tools]
+node = "24" # Executes generated snapshot/handle JavaScript in the JVM regression suite.
 ktlint = "latest"
 # The `pre-commit` task shells out to prek, so it is declared here rather than assumed present:
 # `mise install` in a fresh clone should be enough to run the hooks.
