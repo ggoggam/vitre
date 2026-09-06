@@ -237,6 +237,15 @@ awaitMessage(type = "payment-token", into = "token", timeoutMs = 5_000)
 postMessage(type = "ack", payload = Ack(seen = true), id = "ack-1")
 ```
 
+`click` requires exactly one connected, enabled target with visible layout and rejects hidden or
+inert targets. Validation and dispatch run in one JavaScript turn. It dispatches a synthetic DOM
+click; it does not scroll, check viewport intersection or occlusion, create trusted user input, or prove the site's operation
+completed. Use `waitFor`, extraction, or a bridge acknowledgement to verify the result.
+
+`WorkflowEvent.Failed.kind` and `PageDriverException.kind` distinguish `ActionRejected` (validation
+stopped dispatch), `OutcomeUnknown` (the script may already have taken effect), and general `Failure`.
+Inspect state before retrying an unknown outcome. Scripts are never automatically replayed.
+
 Payloads are classes rather than hand-typed envelope strings. `id` and `type` stay arguments because
 they are protocol. The reply arrives in a variable, and the typing picks up again where the values
 are:

@@ -3,7 +3,9 @@ package dev.ggoggam.vitre.core.frame
 import dev.ggoggam.vitre.core.testing.FakeWebViewController
 import dev.ggoggam.vitre.core.webview.PageLoadException
 import dev.ggoggam.vitre.core.workflow.Workflow
+import dev.ggoggam.vitre.core.workflow.WorkflowFailureKind
 import dev.ggoggam.vitre.core.workflow.WorkflowStep
+import dev.ggoggam.vitre.core.workflow.handle
 import dev.ggoggam.vitre.core.workflow.workflow
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -32,6 +34,44 @@ class WorkflowQueueTest {
     private fun workflow(id: String) = Workflow(id, id, listOf(WorkflowStep.Navigate("https://$id.test")))
 
     private fun pool(lane: FakeWebViewController) = FramePool(listOf("a"), null, mapOf("a" to lane))
+
+    @Test
+    fun `queued jobs preserve known rejection and ambiguous action outcomes`() =
+        runTest {
+            val release = CompletableDeferred<Unit>()
+            var answer = "null"
+            val lane =
+                FakeWebViewController().apply {
+                    onNavigate = { if (it.contains("slow")) release.await() }
+                    nextEvalResult = { answer }
+                }
+            val queue = WorkflowQueue(this, pool(lane), context = EmptyCoroutineContext)
+            try {
+                val first = queue.submit(workflow("slow"))
+                val task = workflow("click", "click") { click(handle("ref")) }
+                val waiting = queue.submit(task)
+                runCurrent()
+                assertIs<WorkflowJobState.Queued>(waiting.state.value)
+                release.complete(Unit)
+                assertIs<WorkflowJobState.Completed>(first.await())
+                assertEquals(WorkflowFailureKind.OutcomeUnknown, assertIs<WorkflowJobState.Failed>(waiting.await()).kind)
+
+                answer = """{"status":"detached","handle":"ref"}"""
+                val rejected = queue.submit(task)
+                assertEquals(WorkflowFailureKind.ActionRejected, assertIs<WorkflowJobState.Failed>(rejected.await()).kind)
+                assertEquals(2, lane.evaluatedScripts.size, "neither job should replay its click")
+            } finally {
+                queue.closeAndJoin()
+            }
+        }
+
+    @Test
+    fun `existing job failure constructor arguments keep their order and default kind`() {
+        val cause = IllegalStateException("failure")
+        val failure = WorkflowJobState.Failed("failure", null, cause)
+        assertEquals(cause, failure.cause)
+        assertEquals(WorkflowFailureKind.Failure, failure.kind)
+    }
 
     @Test
     fun `multiple observers and reconnecting do not execute a submission again`() =

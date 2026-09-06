@@ -25,8 +25,8 @@ class FakeWebViewController : WebViewController {
     val navigations = mutableListOf<String>()
     val evaluatedScripts = mutableListOf<String>()
 
-    /** Called with the script that was just submitted to `evaluateJs`. Default returns "null". */
-    var nextEvalResult: (String) -> String = { "null" }
+    /** Defaults to a click acknowledgement for clicks and "null" for other evaluations. */
+    var nextEvalResult: (String) -> String = { if ("el.click();" in it) "true" else "null" }
 
     /**
      * Stands in for the page load `navigate` awaits: it runs after the URL is recorded, so a test

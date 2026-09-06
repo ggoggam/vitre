@@ -5,6 +5,7 @@ import dev.ggoggam.vitre.core.bridge.awaitMessage
 import dev.ggoggam.vitre.core.bridge.jsString
 import dev.ggoggam.vitre.core.frame.Lane
 import dev.ggoggam.vitre.core.frame.LaneSource
+import dev.ggoggam.vitre.core.webview.ScriptOutcomeUnknownException
 import dev.ggoggam.vitre.core.webview.ScriptTimeoutException
 import dev.ggoggam.vitre.core.webview.WebViewController
 import dev.ggoggam.vitre.core.webview.evaluate
@@ -116,7 +117,7 @@ class WorkflowEngine(
             // failure would both lie and break the caller's structured concurrency.
             throw cancellation
         } catch (failure: StepFailure) {
-            emit(WorkflowEvent.Failed(failure.path, failure.reason))
+            emit(WorkflowEvent.Failed(failure.path, failure.reason, failure.kind))
             return Outcome.Failed(failure.reason)
         } finally {
             holder.releaseQuietly()
@@ -336,7 +337,16 @@ class WorkflowEngine(
         } catch (failure: StepFailure) {
             throw failure
         } catch (t: Throwable) {
-            throw StepFailure(path, t.message ?: "unknown error")
+            throw StepFailure(
+                path,
+                t.message ?: "unknown error",
+                when (t) {
+                    is ActionRejectedException -> WorkflowFailureKind.ActionRejected
+                    is ScriptOutcomeUnknownException -> WorkflowFailureKind.OutcomeUnknown
+                    else -> WorkflowFailureKind.Failure
+                },
+                t,
+            )
         }
 
     /**
@@ -448,7 +458,7 @@ class WorkflowEngine(
             }
 
             is WorkflowStep.Click -> {
-                controller.evaluateStep(step, "${LocatorJs.first(step.locator)}?.click()")
+                ClickJs.checkResult(step.locator, controller.evaluateStep(step, ClickJs.click(step.locator)))
             }
 
             is WorkflowStep.Input -> {
@@ -569,11 +579,36 @@ class WorkflowEngine(
         expression: String,
     ): String {
         if (refs.isEmpty()) return evaluateJs(expression)
-        val result = Json.parseToJsonElement(evaluateJs(SnapshotJs.guarded(refs, expression)).decodeJsResult()) as JsonObject
-        val status = result.getValue("status").jsonPrimitive.content
-        val ref = result["handle"]?.jsonPrimitive?.content ?: refs.first()
-        SnapshotJs.explain(ref, status)?.let { error(it) }
-        return result["value"]?.toString() ?: "null"
+
+        fun unknownOutcome(): Nothing =
+            throw ScriptOutcomeUnknownException(
+                "The operation on handle `${refs.first()}` returned an invalid acknowledgement; " +
+                    "it may already have taken effect. Inspect the page before retrying.",
+            )
+        // Do not catch evaluation itself: cancellation and typed platform failures must survive.
+        val raw = evaluateJs(SnapshotJs.guarded(refs, expression))
+        val result =
+            runCatching { Json.parseToJsonElement(raw.decodeJsResult()) as? JsonObject }.getOrNull()
+                ?: unknownOutcome()
+        val status = (result["status"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: unknownOutcome()
+        return when (status) {
+            "ok" -> {
+                result["value"]?.toString() ?: "null"
+            }
+
+            "no-snapshot", "unknown", "detached" -> {
+                val ref =
+                    result["handle"]?.let {
+                        (it as? JsonPrimitive)?.takeIf { value -> value.isString && value.content in refs }?.content
+                            ?: unknownOutcome()
+                    } ?: refs.first()
+                throw ActionRejectedException(requireNotNull(SnapshotJs.explain(ref, status)))
+            }
+
+            else -> {
+                unknownOutcome()
+            }
+        }
     }
 
     /** See [LaneHolder.release]. Swallows everything but cancellation, by design. */
@@ -604,7 +639,9 @@ class WorkflowEngine(
 private class StepFailure(
     val path: StepPath,
     val reason: String,
-) : Exception(reason)
+    val kind: WorkflowFailureKind = WorkflowFailureKind.Failure,
+    cause: Throwable? = null,
+) : Exception(reason, cause)
 
 /** Every element this step addresses, so a handle-aware caller can vet them before acting. */
 private fun WorkflowStep.locators(): List<Locator> =

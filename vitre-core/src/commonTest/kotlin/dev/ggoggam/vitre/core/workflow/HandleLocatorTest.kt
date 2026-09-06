@@ -13,10 +13,8 @@ import kotlin.test.fail
 /**
  * "I act on the element a snapshot showed me, and if it is not there any more I am told so."
  *
- * The second half is the point. Every expression the engine generates resolves a missing element to
- * `null` and carries on — `…?.click()`, `(…?.textContent ?? '')` — which is right for a selector
- * that might legitimately match nothing and wrong for a handle, because a handle is a claim that the
- * element was seen. Without a guard, an agent acting on a stale handle is told it succeeded.
+ * Handles retain useful stale-document diagnostics. Click also validates its resolved target in
+ * the same JavaScript turn as dispatch, for selectors as well as handles.
  */
 class HandleLocatorTest {
     @Test
@@ -50,7 +48,10 @@ class HandleLocatorTest {
         status: String,
         result: String = "null",
     ) = FakeWebViewController().apply {
-        nextEvalResult = { script -> if ("isConnected" in script) "{\"status\":\"$status\",\"value\":$result}" else result }
+        nextEvalResult = { script ->
+            val value = if ("el.click();" in script) "true" else result
+            if ("isConnected" in script) "{\"status\":\"$status\",\"value\":$value}" else value
+        }
     }
 
     @Test
@@ -70,7 +71,7 @@ class HandleLocatorTest {
             val click = controller.evaluatedScripts.last()
             assertTrue("__vitre" in click, "handles live in the page, not in Kotlin: $click")
             assertTrue("\"e7\"" in click, click)
-            assertTrue("?.click()" in click, click)
+            assertTrue("el.click();" in click, click)
             assertEquals(1, controller.evaluatedScripts.size, "validation and action must be atomic")
         }
 
