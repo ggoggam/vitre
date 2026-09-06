@@ -14,14 +14,10 @@ import org.cef.misc.IntRef
 import org.cef.misc.StringRef
 import org.cef.network.CefRequest
 import org.cef.network.CefResponse
-import java.io.IOException
 import java.net.CookiePolicy
 import java.net.URI
-import java.util.concurrent.Executor
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicLong
-import kotlin.system.measureTimeMillis
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeoutException
 
 /**
  * The desktop half of "the app is the network stack", sitting in CEF's resource pipeline.
@@ -61,22 +57,16 @@ class CefNetworkInterceptor(
     private val recorder = ExchangeRecorder(policy)
     private val fetcher = HttpResourceFetcher(JvmCookieJar)
 
-    private val fetchThreads = AtomicLong(0)
-
     /**
      * Where an intercepted fetch actually happens, off the IO thread.
      *
-     * Fixed rather than cached, because the work is blocking IO with no natural ceiling — a page
-     * can ask for a hundred things at once — and an unbounded pool would answer that with a hundred
-     * threads. Sized well above [dev.ggoggam.vitre.core.frame.Lanes.MAX_LANES] so that a lane's own
-     * subresources never queue behind its neighbours', which is the failure this exists to remove.
+     * Both threads and waiting requests are bounded. Admission never blocks CEF's IO thread:
+     * overload returns a 503, and work that waited over twenty seconds returns a 504 when dequeued.
+     * Cancelled waiting requests are removed immediately so new pages can use their queue slots.
      *
      * Daemon threads: a host that forgets [dispose] should still be able to exit.
      */
-    private val fetches: ExecutorService =
-        Executors.newFixedThreadPool(FETCH_THREADS) { runnable ->
-            Thread(runnable, "vitre-fetch-" + fetchThreads.incrementAndGet()).apply { isDaemon = true }
-        }
+    private val fetches = FetchQueue(workers = FETCH_THREADS, capacity = FETCH_QUEUE_CAPACITY)
 
     override val exchanges: SharedFlow<NetworkExchange> get() = recorder.exchanges
 
@@ -190,18 +180,17 @@ class CefNetworkInterceptor(
             policy = policy,
             recorder = recorder,
             fetcher = fetcher,
-            executor = fetches,
+            queue = fetches,
         )
 
     /**
      * Stops the fetch workers. A pool does this in `KcefWebViewPool.dispose`.
      *
-     * In-flight fetches are left to finish rather than interrupted: their CEF callbacks are still
-     * outstanding, and a resource load whose handler never answers stays pending until the frame
-     * goes away.
+     * In-flight fetches finish. Waiting requests and later submissions receive a 503, completing
+     * their outstanding CEF callbacks without fetching pages that are being disposed.
      */
     fun dispose() {
-        fetches.shutdown()
+        fetches.close()
     }
 
     private fun preflight(request: InterceptedRequest): CefResourceHandler {
@@ -224,6 +213,7 @@ class CefNetworkInterceptor(
          * ten times that in total, so this is well inside what the far end expects.
          */
         const val FETCH_THREADS = 16
+        const val FETCH_QUEUE_CAPACITY = 128
     }
 }
 
@@ -345,49 +335,58 @@ private class FetchedResourceHandler(
     policy: InterceptionPolicy,
     private val recorder: ExchangeRecorder,
     private val fetcher: HttpResourceFetcher,
-    private val executor: Executor,
+    queue: FetchQueue,
 ) : InterceptedResourceHandler(request, policy, initial = null) {
-    @Volatile
-    private var cancelled = false
+    private var callback: CefCallback? = null
+    private var startedAt = 0L
+    private val task =
+        queue.task(
+            work = { fetcher.fetch(this.request) },
+            complete = { result ->
+                val elapsed = (System.nanoTime() - startedAt) / 1_000_000
+                val body = result.getOrNull()
+                if (body != null) {
+                    recorder.record(this.request, body, ExchangeOutcome.Fetched, elapsed)
+                    served = body
+                } else {
+                    val failure = result.exceptionOrNull()
+                    val reason = failure?.message ?: "interception failed"
+                    val status =
+                        when (failure) {
+                            is RejectedExecutionException -> 503
+                            is TimeoutException -> 504
+                            else -> 502
+                        }
+                    val error = gatewayError(status, reason)
+                    recorder.record(this.request, error, ExchangeOutcome.Failed, elapsed, reason)
+                    served = error
+                }
+                // Task completion and cancellation are serialized; cancellation cannot return
+                // while this callback is still being invoked on a worker.
+                try {
+                    callback?.Continue()
+                } catch (_: RuntimeException) {
+                    // CEF may already have destroyed the browser. One invalid native callback
+                    // must not prevent dispose() from answering the other waiting requests.
+                } finally {
+                    callback = null
+                }
+            },
+        )
 
     override fun processRequest(
         request: CefRequest?,
         callback: CefCallback?,
     ): Boolean {
-        executor.execute {
-            var fetched: InterceptedResponse? = null
-            var failure: String? = null
-            val elapsed =
-                measureTimeMillis {
-                    try {
-                        fetched = fetcher.fetch(this.request)
-                    } catch (e: IOException) {
-                        failure = e.message ?: e::class.simpleName ?: "network error"
-                    } catch (e: RuntimeException) {
-                        // A malformed URL or an unsupported protocol reaches here.
-                        failure = e.message ?: e::class.simpleName ?: "interception error"
-                    }
-                }
-            val body = fetched
-            if (body != null) {
-                recorder.record(this.request, body, ExchangeOutcome.Fetched, elapsed)
-                served = body
-            } else {
-                val reason = failure ?: "interception failed"
-                val error = gatewayError(reason)
-                recorder.record(this.request, error, ExchangeOutcome.Failed, elapsed, reason)
-                served = error
-            }
-            // A cancelled request has nobody left to answer, and `Continue()` on one is at best
-            // ignored. The fetch itself is allowed to finish either way — it is already on the wire,
-            // and its exchange is worth recording.
-            if (!cancelled) callback?.Continue()
-        }
+        this.callback = callback
+        startedAt = System.nanoTime()
+        task.start()
         return true
     }
 
     override fun cancel() {
-        cancelled = true
+        task.cancel()
+        callback = null
     }
 
     /**
@@ -397,21 +396,20 @@ private class FetchedResourceHandler(
      * `CefWebViewController` deliberately ignores — a page navigating away from itself reports the
      * same code — so the lane would sit on its previous document with nothing anywhere saying why.
      */
-    private fun gatewayError(reason: String): InterceptedResponse =
+    private fun gatewayError(
+        status: Int,
+        reason: String,
+    ): InterceptedResponse =
         InterceptedResponse(
-            status = HTTP_BAD_GATEWAY,
-            reason = "Bad Gateway",
-            contentType = "text/html",
+            status = status,
+            reason =
+                when (status) {
+                    503 -> "Service Unavailable"
+                    504 -> "Gateway Timeout"
+                    else -> "Bad Gateway"
+                },
+            contentType = "text/plain",
             charset = "utf-8",
-            body =
-                (
-                    "<!doctype html><meta charset=\"utf-8\">" +
-                        "<title>Interception failed</title>" +
-                        "<p>vitre could not fetch <code>${request.url}</code>: $reason"
-                ).toByteArray(),
+            body = "vitre could not fetch ${request.url}: $reason".toByteArray(),
         )
-
-    private companion object {
-        const val HTTP_BAD_GATEWAY = 502
-    }
 }
