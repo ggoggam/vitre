@@ -26,7 +26,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
-/** "A host that already runs the MCP server does not describe the same thirteen tools twice." */
+/** "A host that already runs the MCP server does not describe the same toolset twice." */
 @OptIn(InternalAgentToolsApi::class)
 class VitreMcpBridgeTest {
     private class Fixture(

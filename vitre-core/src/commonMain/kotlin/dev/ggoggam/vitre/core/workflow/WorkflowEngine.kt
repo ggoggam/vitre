@@ -462,13 +462,11 @@ class WorkflowEngine(
             }
 
             is WorkflowStep.Input -> {
-                controller.evaluateStep(
-                    step,
-                    "(function(){var el=${LocatorJs.first(step.locator)};" +
-                        "if(el){el.value=${jsString(step.text.resolve(variables, path))};" +
-                        "el.dispatchEvent(new Event('input',{bubbles:true}));" +
-                        "el.dispatchEvent(new Event('change',{bubbles:true}));}})()",
-                )
+                // Resolve templates before dispatch, and validate handles in the same evaluation
+                // that drives the control and returns its status.
+                val text = step.text.resolve(variables, path)
+                val status = controller.evaluateStep(step, InputJs.script(step, text)).decodeJsResult()
+                InputJs.explain(step, status, text)?.let { error(it) }
             }
 
             is WorkflowStep.Extract -> {

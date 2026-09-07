@@ -18,6 +18,29 @@ import kotlin.test.fail
  */
 class HandleLocatorTest {
     @Test
+    fun input_actions_preserve_status_inside_the_handle_guard() =
+        runTest {
+            val actions =
+                listOf(
+                    WorkflowStep.Input(handle("e1"), "hello"),
+                    WorkflowStep.Input.SetChecked(handle("e1"), true),
+                    WorkflowStep.Input.SelectOption(handle("e1"), "Large"),
+                    WorkflowStep.Input.Press(handle("e1"), "a"),
+                )
+            for (action in actions) {
+                val controller =
+                    FakeWebViewController().apply {
+                        nextEvalResult = { """{"status":"ok","value":"ok"}""" }
+                    }
+                val workflow = Workflow("input", "input", listOf(action))
+                val result = WorkflowEngine(controller, EmptyCoroutineContext).run(workflow).toList().last()
+
+                assertIs<WorkflowEvent.Completed>(result)
+                assertTrue("isConnected" in controller.evaluatedScripts.single())
+            }
+        }
+
+    @Test
     fun atomic_handle_results_preserve_extracted_strings() =
         runTest {
             val controller = controllerFor("ok", "\"line one\\n\\\"line two\\\"\"")

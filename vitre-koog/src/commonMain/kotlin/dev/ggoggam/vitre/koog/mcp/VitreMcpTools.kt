@@ -35,7 +35,7 @@ import kotlinx.serialization.json.put
  * are checked before a call is made. This exists for the host that already stands one up, which is
  * a real situation rather than a hypothetical: an app that exposes its WebViews over MCP for a
  * desktop client, or one whose own agent chat already speaks the protocol, would otherwise be
- * running two descriptions of the same thirteen tools and maintaining both.
+ * running two descriptions of the same toolset and maintaining both.
  *
  * What comes back is discovered at runtime from `tools/list`, so a tool added to the server appears
  * here without a line of code — and the arguments are an untyped [JsonObject] checked by the server

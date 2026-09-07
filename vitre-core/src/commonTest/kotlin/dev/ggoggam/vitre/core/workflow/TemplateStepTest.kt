@@ -32,19 +32,36 @@ class TemplateStepTest {
     fun input_fills_its_text_in_and_still_escapes_it_for_javascript() =
         runTest {
             val controller = FakeWebViewController()
-            controller.nextEvalResult = { "\"say \\\"hi\\\"\"" }
+            controller.nextEvalResult = { if ("var T=" in it) "\"ok\"" else "\"say \\\"hi\\\"\"" }
             val workflow =
                 workflow("wf", "templated input") {
                     extract("#seed", into = "seed")
                     input("#q", template("{seed}!"))
                 }
 
-            WorkflowEngine(controller, EmptyCoroutineContext).run(workflow).toList()
+            val events = WorkflowEngine(controller, EmptyCoroutineContext).run(workflow).toList()
+
+            assertIs<WorkflowEvent.Completed>(events.last())
 
             // The resolved value goes through `jsString` exactly as a literal would — a variable
             // holding a quote must not be able to close the string it is interpolated into.
             val typed = controller.evaluatedScripts.last()
-            assertTrue(typed.contains("""el.value="say \"hi\"!""""), typed)
+            assertTrue(typed.contains("""var T="say \"hi\"!""""), typed)
+            assertTrue(typed.contains("nset(el,T)"), typed)
+        }
+
+    @Test
+    fun input_with_an_unset_template_variable_fails_before_dispatch() =
+        runTest {
+            val controller = FakeWebViewController()
+            val workflow = workflow("wf", "missing input variable") { input("#q", template("{missing}")) }
+
+            val events = WorkflowEngine(controller, EmptyCoroutineContext).run(workflow).toList()
+
+            val failed = assertIs<WorkflowEvent.Failed>(events.last())
+            assertEquals(StepPath.root(0), failed.path)
+            assertTrue("missing" in failed.message)
+            assertTrue(controller.evaluatedScripts.isEmpty())
         }
 
     @Test
