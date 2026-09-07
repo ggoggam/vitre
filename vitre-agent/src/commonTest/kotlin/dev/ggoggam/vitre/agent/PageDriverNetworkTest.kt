@@ -195,6 +195,84 @@ class PageDriverNetworkTest {
         }
 
     @Test
+    fun body_budget_eviction_is_reported_even_when_the_filter_finds_nothing() =
+        runTest {
+            val fixture = Fixture(this, log = NetworkLog(maxExchanges = 100, maxBodyChars = 10))
+            fixture.log!!.record(exchange(1, "https://shop.test/first", body = "a".repeat(10)))
+            fixture.log.record(exchange(2, "https://shop.test/second", body = "b".repeat(10)))
+
+            val read = fixture.driver.readNetwork()
+            assertEquals(1, read.retained)
+            assertEquals(1L, read.evicted)
+            for (filter in listOf(null, "first")) {
+                val rendered = PageToolReplies.network(fixture.driver.readNetwork(urlContains = filter))
+                assertTrue("Partial history: 1 older captured exchange dropped" in rendered, rendered)
+            }
+
+            fixture.log.clear()
+            assertFalse("Partial history" in PageToolReplies.network(fixture.driver.readNetwork()))
+        }
+
+    @Test
+    fun a_buffer_at_capacity_without_eviction_does_not_claim_traffic_was_dropped() =
+        runTest {
+            val fixture = Fixture(this, log = NetworkLog(maxExchanges = 1))
+            fixture.log!!.record(exchange(1, "https://shop.test/a"))
+
+            val read = fixture.driver.readNetwork()
+            assertEquals(0L, read.evicted)
+            assertFalse("dropped" in PageToolReplies.network(read))
+        }
+
+    @Test
+    fun a_passed_through_post_has_an_unobserved_response_and_may_have_succeeded() =
+        runTest {
+            val fixture = Fixture(this)
+            fixture.log!!.record(
+                exchange(1, "https://shop.test/api/order", status = 0)
+                    .copy(method = "POST", outcome = ExchangeOutcome.PassedThrough, contentType = null),
+            )
+
+            val read = fixture.driver.readNetwork()
+            assertEquals(ExchangeOutcome.PassedThrough, read.exchanges.single().outcome)
+            val rendered = PageToolReplies.network(read)
+            assertTrue("POST (response unobserved) [PassedThrough]" in rendered, rendered)
+            assertTrue("body: unobserved" in rendered, rendered)
+            assertTrue("may have succeeded" in rendered, rendered)
+            assertFalse("no response" in rendered, rendered)
+            assertFalse("nontextual" in rendered, rendered)
+        }
+
+    @Test
+    fun an_interceptor_failure_keeps_its_outcome_and_error_without_claiming_browser_failure() =
+        runTest {
+            val fixture = Fixture(this)
+            fixture.log!!.record(exchange(1, "https://shop.test/api/search", status = 0, error = "fetch timed out"))
+
+            val read = fixture.driver.readNetwork()
+            assertEquals(ExchangeOutcome.Failed, read.exchanges.single().outcome)
+            val rendered = PageToolReplies.network(read)
+            assertTrue("[Failed]" in rendered, rendered)
+            assertTrue("fetch timed out" in rendered, rendered)
+            assertTrue("does not establish the browser's final outcome" in rendered, rendered)
+            assertFalse("no response" in rendered, rendered)
+        }
+
+    @Test
+    fun both_the_description_and_empty_reply_explain_policy_filtered_capture() =
+        runTest {
+            val fixture = Fixture(this)
+            for (text in listOf(PageToolDocs.READ_NETWORK, PageToolReplies.network(fixture.driver.readNetwork()))) {
+                assertTrue("interception policy" in text, text)
+                assertTrue("static assets" in text, text)
+                assertTrue("main-frame interception may be disabled" in text, text)
+                assertTrue("default policy does not intercept" in text, text)
+                assertFalse("every request is visible" in text, text)
+                assertFalse("see everything" in text, text)
+            }
+        }
+
+    @Test
     fun the_limits_are_clamped_here_so_neither_adapter_has_to_do_it() =
         runTest {
             val fixture = Fixture(this)

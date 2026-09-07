@@ -276,6 +276,7 @@ internal class WebViewTools(
                     put("returned", read.exchanges.size)
                     put("matched", read.matched)
                     put("retained", read.retained)
+                    put("evicted", read.evicted)
                 },
         )
     }

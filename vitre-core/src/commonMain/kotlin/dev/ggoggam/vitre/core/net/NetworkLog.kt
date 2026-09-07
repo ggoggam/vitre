@@ -1,9 +1,14 @@
 package dev.ggoggam.vitre.core.net
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.ExperimentalForInheritanceCoroutinesApi
+import kotlinx.coroutines.InternalCoroutinesApi
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -29,8 +34,9 @@ import kotlinx.coroutines.launch
  *
  * The *coverage* question — which requests reach a tap at all — is the platform's rather than this
  * class's, and the two platforms answer very differently. See [NetworkTap] and `ScriptedTap`:
- * Android and desktop see everything from below the page, iOS sees only what the page's own script
- * asked for.
+ * Android and desktop report traffic selected by the interception policy and handlers; declined
+ * subresources and main-frame requests excluded by policy can be missing. iOS sees only what the
+ * page's own script asked for.
  *
  * ## Eviction
  *
@@ -53,7 +59,12 @@ class NetworkLog(
     val maxExchanges: Int = DEFAULT_MAX_EXCHANGES,
     val maxBodyChars: Int = DEFAULT_MAX_BODY_CHARS,
 ) {
-    private val retained = MutableStateFlow<List<NetworkExchange>>(emptyList())
+    private data class Retention(
+        val exchanges: List<NetworkExchange> = emptyList(),
+        val evicted: Long = 0,
+    )
+
+    private val retained = MutableStateFlow(Retention())
 
     /**
      * Everything currently held, oldest first.
@@ -62,10 +73,22 @@ class NetworkLog(
      * lock — which matters, because exchanges arrive on whichever thread the tap published on — and
      * a host that wants to render the traffic gets something observable for free.
      */
-    val exchanges: StateFlow<List<NetworkExchange>> get() = retained.asStateFlow()
+    @OptIn(ExperimentalForInheritanceCoroutinesApi::class)
+    val exchanges: StateFlow<List<NetworkExchange>> =
+        object : StateFlow<List<NetworkExchange>> {
+            // Project the atomic snapshot without a second mutable flow or a background collector.
+            override val value: List<NetworkExchange> get() = retained.value.exchanges
+            override val replayCache: List<List<NetworkExchange>> get() = listOf(value)
+
+            @OptIn(InternalCoroutinesApi::class)
+            override suspend fun collect(collector: FlowCollector<List<NetworkExchange>>): Nothing {
+                retained.map { it.exchanges }.distinctUntilChanged().collect(collector)
+                error("A StateFlow never completes")
+            }
+        }
 
     /** How many exchanges are held right now. */
-    val size: Int get() = retained.value.size
+    val size: Int get() = retained.value.exchanges.size
 
     /**
      * Adds one exchange, evicting oldest until both bounds hold again.
@@ -75,12 +98,16 @@ class NetworkLog(
      */
     fun record(exchange: NetworkExchange) {
         val trimmed = exchange.withBodyCappedAt(maxBodyChars)
-        retained.update { held -> (held + trimmed).evicted() }
+        retained.update { state ->
+            val added = state.exchanges + trimmed
+            val kept = added.evicted()
+            Retention(kept, state.evicted + added.size - kept.size)
+        }
     }
 
-    /** Forgets everything. For a host that reuses a pool across unrelated runs. */
+    /** Forgets all exchanges and resets the eviction count for a new capture history. */
     fun clear() {
-        retained.update { emptyList() }
+        retained.update { Retention() }
     }
 
     /**
@@ -98,7 +125,8 @@ class NetworkLog(
         urlContains: String? = null,
         limit: Int = DEFAULT_QUERY_LIMIT,
     ): NetworkQuery {
-        val held = retained.value
+        val state = retained.value
+        val held = state.exchanges
         val matched =
             if (urlContains.isNullOrEmpty()) {
                 held
@@ -109,6 +137,7 @@ class NetworkLog(
             exchanges = matched.asReversed().take(limit.coerceAtLeast(0)),
             matched = matched.size,
             retained = held.size,
+            evicted = state.evicted,
         )
     }
 
@@ -150,13 +179,15 @@ data class NetworkQuery(
     val matched: Int,
     /** How many the log held in total when the query ran. */
     val retained: Int,
+    /** Exchanges dropped by either retention bound since the last [NetworkLog.clear], before filtering. */
+    val evicted: Long = 0,
 )
 
 /**
  * Retains everything [this] publishes from now on, in a log bound by the given limits.
  *
  * ```kotlin
- * val pool = AndroidWebViewPool(context, policy = InterceptionPolicy())
+ * val pool = AndroidWebViewPool(context, policy = InterceptionPolicy.OBSERVE_ONLY)
  * val network = pool.tap.retainIn(scope)   // before anything navigates
  * ```
  *
@@ -164,7 +195,8 @@ data class NetworkQuery(
  * has been cancelled simply stops growing, and what it already holds stays readable, which is the
  * useful behaviour after a run has finished.
  *
- * The subscription is what starts retention, so this has to happen before the traffic does — see
+ * The subscription is established before this returns, even if the scope dispatcher is busy.
+ * Call this before the traffic starts — see
  * [NetworkLog] on why there is no backfill to be had.
  */
 fun NetworkTap.retainIn(
@@ -173,7 +205,7 @@ fun NetworkTap.retainIn(
     maxBodyChars: Int = NetworkLog.DEFAULT_MAX_BODY_CHARS,
 ): NetworkLog {
     val log = NetworkLog(maxExchanges, maxBodyChars)
-    scope.launch { exchanges.collect { log.record(it) } }
+    scope.launch(start = CoroutineStart.UNDISPATCHED) { exchanges.collect { log.record(it) } }
     return log
 }
 
