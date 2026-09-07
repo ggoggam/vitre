@@ -197,6 +197,41 @@ class VitreToolsTest {
         }
 
     @Test
+    fun read_network_preserves_unobserved_outcomes_and_body_budget_eviction() =
+        runTest {
+            val fixture = Fixture(this)
+            val log = NetworkLog(maxExchanges = 100, maxBodyChars = 1)
+            fixture.sessions.register("main", fixture.page, network = log)
+            for (outcome in listOf(ExchangeOutcome.PassedThrough, ExchangeOutcome.Failed)) {
+                log.clear()
+                val exchange =
+                    NetworkExchange(
+                        id = 1,
+                        method = "GET",
+                        url = "https://shop.test/old",
+                        outcome = ExchangeOutcome.Fetched,
+                        status = 200,
+                        requestHeaders = emptyMap(),
+                        responseHeaders = emptyMap(),
+                        contentType = "application/json",
+                        body = "1",
+                        bodyTruncated = false,
+                        durationMs = 1,
+                    )
+                log.record(exchange)
+                log.record(exchange.copy(id = 2, url = "https://shop.test/new", body = "2"))
+                log.record(exchange.copy(id = 3, method = "POST", outcome = outcome, status = 0, body = null))
+
+                val tool = ReadNetworkTool(fixture.driver)
+                val result = tool.execute(ReadNetworkTool.Args(), ToolCallMetadata.EMPTY)
+                val text = tool.encodeResultToString(result, JSON_SERIALIZER)
+                assertTrue("POST (response unobserved) [$outcome]" in text, text)
+                assertTrue("Partial history: 1 older captured exchange dropped" in text, text)
+                assertFalse("no response" in text, text)
+            }
+        }
+
+    @Test
     fun read_network_hands_back_the_captured_json_verbatim() =
         runTest {
             val fixture = Fixture(this)

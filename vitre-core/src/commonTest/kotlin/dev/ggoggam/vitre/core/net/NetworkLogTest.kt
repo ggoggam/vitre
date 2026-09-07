@@ -1,9 +1,12 @@
 package dev.ggoggam.vitre.core.net
 
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -79,6 +82,7 @@ class NetworkLogTest {
         repeat(5) { log.record(exchange(it.toLong(), "https://shop.test/$it")) }
 
         assertEquals(3, log.size)
+        assertEquals(2L, log.query().evicted)
         assertEquals(
             listOf("https://shop.test/4", "https://shop.test/3", "https://shop.test/2"),
             log.query().exchanges.map { it.url },
@@ -94,6 +98,8 @@ class NetworkLogTest {
         log.record(exchange(2, "https://shop.test/b", body = "b".repeat(10)))
         log.record(exchange(3, "https://shop.test/c", body = "c".repeat(10)))
 
+        assertEquals(1L, log.query().evicted)
+        assertEquals(1L, log.query(urlContains = "missing").evicted)
         assertEquals(
             listOf("https://shop.test/c", "https://shop.test/b"),
             log.query().exchanges.map { it.url },
@@ -142,7 +148,8 @@ class NetworkLogTest {
             // `backgroundScope` because the collector never completes on its own — a tap is a
             // firehose, not a finite flow — and `runTest` waits for the test body's own children.
             val log = tap.retainIn(backgroundScope)
-            runCurrent()
+            // Do not run the dispatcher before publishing: retainIn must subscribe before returning.
+            assertEquals(1, tap.subscriberCount)
 
             tap.publish(exchange(1, "https://shop.test/api/search"))
             tap.publish(exchange(2, "https://shop.test/api/stock"))
@@ -174,6 +181,72 @@ class NetworkLogTest {
             assertEquals(0, log.size)
         }
 
+    @Test
+    fun reaching_capacity_and_truncating_a_body_do_not_count_as_eviction() {
+        val log = NetworkLog(maxExchanges = 1, maxBodyChars = 3)
+        log.record(exchange(1, "https://shop.test/a", body = "oversized"))
+
+        assertEquals(0L, log.query().evicted)
+        assertTrue(
+            log
+                .query()
+                .exchanges
+                .single()
+                .bodyTruncated,
+        )
+    }
+
+    @Test
+    fun clearing_resets_eviction_and_the_observable_history() {
+        val log = NetworkLog(maxExchanges = 1)
+        log.record(exchange(1, "https://shop.test/a"))
+        log.record(exchange(2, "https://shop.test/b"))
+        assertEquals(1L, log.query().evicted)
+        assertEquals(log.query().exchanges, log.exchanges.value)
+
+        log.clear()
+        assertEquals(0L, log.query().evicted)
+        assertEquals(0, log.query().retained)
+        assertTrue(log.exchanges.value.isEmpty())
+        log.record(exchange(3, "https://shop.test/c"))
+        assertEquals(0L, log.query().evicted)
+    }
+
+    @Test
+    fun the_exchange_flow_emits_retained_history_and_clear() =
+        runTest {
+            val log = NetworkLog(maxExchanges = 1)
+            val observed = mutableListOf<List<Long>>()
+            backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
+                log.exchanges.collect { held -> observed.add(held.map { it.id }) }
+            }
+            log.record(exchange(1, "https://shop.test/a"))
+            runCurrent()
+            log.record(exchange(2, "https://shop.test/b"))
+            runCurrent()
+            log.clear()
+            runCurrent()
+
+            assertEquals(listOf(emptyList(), listOf(1L), listOf(2L), emptyList()), observed)
+            assertEquals(listOf(emptyList()), log.exchanges.replayCache)
+        }
+
+    @Test
+    fun cancelling_the_scope_stops_retention_and_leaves_history_readable() =
+        runTest {
+            val tap = FakeTap()
+            val log = tap.retainIn(backgroundScope)
+            tap.publish(exchange(1, "https://shop.test/a"))
+            runCurrent()
+
+            backgroundScope.cancel()
+            runCurrent()
+            assertEquals(0, tap.subscriberCount)
+            tap.publish(exchange(2, "https://shop.test/b"))
+            runCurrent()
+            assertEquals(listOf("https://shop.test/a"), log.query().exchanges.map { it.url })
+        }
+
     /** A tap under our control, so the test can decide exactly when an exchange is published. */
     private class FakeTap : NetworkTap {
         private val published =
@@ -183,6 +256,8 @@ class NetworkLogTest {
             )
 
         override val exchanges: SharedFlow<NetworkExchange> get() = published.asSharedFlow()
+
+        val subscriberCount: Int get() = published.subscriptionCount.value
 
         fun publish(exchange: NetworkExchange) {
             published.tryEmit(exchange)

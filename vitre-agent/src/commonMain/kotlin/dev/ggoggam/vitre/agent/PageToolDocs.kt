@@ -173,13 +173,19 @@ object PageToolDocs {
             "call it once with `max_body_chars: 0` to list the traffic cheaply, then again naming " +
             "the one you want.\n\n" +
             "What is visible depends on the platform, and an exchange missing here is NOT evidence " +
-            "that the request did not happen. On Android and desktop the traffic is watched from " +
-            "below the page, so every request is visible. On iOS there is no such hook: the page " +
+            "that the request did not happen. On Android and desktop, capture depends on the " +
+            "interception policy and handlers. The default policy does not intercept network requests; " +
+            "document/data policies exclude static assets, declined subresources are generally " +
+            "unreported, and main-frame interception may be disabled. PassedThrough means the request was " +
+            "left to the browser and its response is unobserved, not that it failed. Failed means " +
+            "the interceptor failed; it does not establish the browser's final outcome. " +
+            "On iOS there is no such hook: the page " +
             "is asked to report on itself, so only its own `fetch` and `XMLHttpRequest` calls " +
             "appear — document loads, images and stylesheets never do, and a page that replaces " +
             "`fetch` with its own before the tap is installed reports nothing at all. Only traffic " +
             "from after the app started capturing is held, and the oldest is dropped once the " +
-            "buffer is full. If what you are looking for is not here, read the page with " +
+            "exchange-count or body-text retention limit is reached. If what you are looking for is " +
+            "not here, read the page with " +
             "`snapshot` and `extract` instead of concluding it was never fetched."
 
     const val ACQUIRE_LEASE: String =

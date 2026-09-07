@@ -111,8 +111,10 @@ data class NetworkRead(
     val matched: Int,
     /** How many exchanges the log held in total. */
     val retained: Int,
-    /** The log's own bound, so a full log can be reported as "older ones have been dropped". */
+    /** The maximum number of exchanges the log can retain. */
     val capacity: Int,
+    /** Exchanges dropped by either retention bound since the log was last cleared, before filtering. */
+    val evicted: Long = 0,
 )
 
 /**
@@ -459,6 +461,7 @@ class PageDriver(
             matched = query.matched,
             retained = query.retained,
             capacity = log.maxExchanges,
+            evicted = query.evicted,
         )
     }
 

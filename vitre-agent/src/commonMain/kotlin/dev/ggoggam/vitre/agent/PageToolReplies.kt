@@ -1,6 +1,7 @@
 package dev.ggoggam.vitre.agent
 
 import dev.ggoggam.vitre.agent.session.WebViewSession
+import dev.ggoggam.vitre.core.net.ExchangeOutcome
 import dev.ggoggam.vitre.core.workflow.Locator
 import dev.ggoggam.vitre.core.workflow.describe
 
@@ -84,12 +85,13 @@ object PageToolReplies {
                 append("No captured exchange$scope. ")
                 append(
                     if (read.retained == 0) {
-                        "Nothing has been captured for this session at all — either the page has " +
-                            "made no requests the tap can see, or it made them before capture started. "
+                        "No exchanges are currently retained — either the page has " +
+                            "made no requests the tap can see, it made them before capture started, or they were dropped. "
                     } else {
                         "${read.retained} exchange${plural(read.retained)} are held, none of them a match. "
                     },
                 )
+                append(read.evictionNotice())
                 append(NOT_PROOF_OF_ABSENCE)
             }
         }
@@ -98,12 +100,9 @@ object PageToolReplies {
             append(plural(read.matched))
             append(scope)
             append(", newest first")
-            // Said only when it is true, and it is exactly the case where an older exchange the
-            // caller is looking for may have existed and been dropped.
-            if (read.retained >= read.capacity) {
-                append(" (the buffer is full at ${read.capacity}, so anything older has been dropped)")
-            }
-            append(".\n")
+            append(". ")
+            append(read.evictionNotice())
+            append('\n')
             read.exchanges.forEach { exchange ->
                 append('\n')
                 append(exchange.render())
@@ -115,7 +114,8 @@ object PageToolReplies {
     private fun NetworkExchangeSummary.render(): String =
         buildString {
             append("${method.uppercase()} ")
-            append(if (status > 0) "$status " else "(no response) ")
+            append(if (status > 0) "$status " else "(response unobserved) ")
+            append("[$outcome] ")
             append(url)
             val notes = listOfNotNull(contentType, "${durationMs}ms".takeIf { durationMs > 0 }, error)
             if (notes.isNotEmpty()) append(" — ${notes.joinToString(", ")}")
@@ -137,11 +137,27 @@ object PageToolReplies {
                         "body: not shown (raise `max_body_chars` to see it)"
                     }
 
+                    outcome == ExchangeOutcome.PassedThrough -> {
+                        "body: unobserved (passed through to the browser; the request may have succeeded)"
+                    }
+
+                    outcome == ExchangeOutcome.Failed -> {
+                        "body: none captured (the interceptor failed; this does not establish the browser's final outcome)"
+                    }
+
                     else -> {
-                        "body: none captured (not textual, or capture is off for this session)"
+                        "body: none captured (the response may have no body, be nontextual, or body capture may be disabled)"
                     }
                 },
             )
+        }
+
+    private fun NetworkRead.evictionNotice(): String =
+        if (evicted > 0) {
+            "Partial history: $evicted older captured exchange${if (evicted == 1L) "" else "s"} " +
+                "dropped by the exchange-count or body-text retention limit since capture started or was cleared. "
+        } else {
+            ""
         }
 
     private fun plural(count: Int): String = if (count == 1) "" else "s"
@@ -150,6 +166,8 @@ object PageToolReplies {
     private const val NOT_PROOF_OF_ABSENCE: String =
         "This is not proof the request was never made: on iOS only the page's own `fetch` and " +
             "`XMLHttpRequest` calls are ever captured — document loads, images and stylesheets are " +
-            "invisible — while Android and desktop see everything. Read the page with `snapshot` " +
-            "and `extract` instead."
+            "invisible. On Android and desktop, capture depends on the interception policy and handlers: " +
+            "declined subresources are generally unreported, document/data policies exclude static assets, " +
+            "and main-frame interception may be disabled. The default policy does not intercept network " +
+            "requests. Read the page with `snapshot` and `extract` instead."
 }
