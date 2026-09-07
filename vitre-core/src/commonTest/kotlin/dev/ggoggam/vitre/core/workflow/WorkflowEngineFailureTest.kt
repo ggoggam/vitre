@@ -32,7 +32,7 @@ class WorkflowEngineFailureTest {
             val events = WorkflowEngine(controller, EmptyCoroutineContext).run(workflow).toList()
 
             val failed = assertIs<WorkflowEvent.Failed>(events.last())
-            assertEquals(1, failed.stepIndex)
+            assertEquals(StepPath.root(1), failed.path)
             assertEquals("boom", failed.message)
             // Third step should not have run.
             assertEquals(listOf("about:blank"), controller.navigations)

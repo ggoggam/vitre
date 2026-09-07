@@ -80,12 +80,28 @@ fun interface RequestHandler {
 }
 
 /**
- * What the interceptor is allowed to do. Off by default at the WebView level: a controller
- * constructed without a policy behaves exactly as it did before this existed.
+ * What the interceptor is allowed to do.
+ *
+ * **Inert by default.** A default-constructed policy answers from its [handlers] and does nothing
+ * else: no refetching, no rewriting, nothing on the tap. Every real site a lane loads under it is
+ * loaded by the browser's own network stack, byte for byte the document the browser would have got.
+ *
+ * That default is a deliberate reversal, and the reason is that the old one was wrong in the field.
+ * Interception used to cover documents and data out of the box, which meant this library refetched
+ * a page through `HttpURLConnection` before any caller had asked it to — HTTP/1.1, no shared cache,
+ * redirects followed by hand, a cookie jar bridged across, and none of the browser's TLS or HTTP/2
+ * shape. Bot detection reads that as a non-browser and answers with a challenge, which renders in a
+ * lane as "Webpage not available" and is indistinguishable from a lane that failed to load. Making
+ * every caller pay that — including one that only wanted a WebView on screen — to enable a feature
+ * they may never touch is the wrong way round.
+ *
+ * [AUTOMATION] is the opt-in for the other case: a pool driving sites the app deliberately
+ * automates, where CORS relaxation and the tap are worth what the refetch costs.
  *
  * [permissiveCors] is the load-bearing switch, and it hands a page reads that the site's own CORS
- * policy was written to refuse — see `docs/PARALLEL-LANES.md`. Point this at sites the app is
- * deliberately automating, not at a WebView showing content someone else chose.
+ * policy was written to refuse — see `docs/PARALLEL-LANES.md`. Off by default for exactly that
+ * reason: it belongs on sites the app is deliberately automating, never on a WebView showing
+ * content someone else chose, and a default is read by both.
  */
 data class InterceptionPolicy(
     /**
@@ -96,47 +112,83 @@ data class InterceptionPolicy(
      * The CSP half is not an extra: CORS is the *server's* opinion about who may read a response,
      * `connect-src` is the *page's* opinion about where it may ask at all, and relaxing only the
      * first leaves the fetch blocked with an error that names neither.
+     *
+     * It also couples this to [intercept] in a way worth knowing before tuning either: the CSP
+     * arrives on the *document*, so widening it requires the document to have been intercepted. A
+     * policy that relaxes CORS while leaving the main frame to the browser still loses to
+     * `connect-src 'self'`, with correct CORS headers on a request the page was never allowed to
+     * make.
      */
-    val permissiveCors: Boolean = true,
+    val permissiveCors: Boolean = false,
     /** Capture textual response bodies onto the [NetworkTap]. Headers are always captured. */
     val captureBodies: Boolean = true,
     /** Bodies larger than this are reported truncated rather than held in memory. */
     val maxCapturedBodyBytes: Int = DEFAULT_MAX_CAPTURED_BODY_BYTES,
     /**
-     * Whether to intercept the main frame too. On, because a lane's site *is* the main frame: it is
-     * the one request that carries the document, so leaving it to the platform means a
-     * [RequestHandler] never answers one and the tap never sees one.
+     * Which requests to take over. Everything else goes to the platform untouched and unreported —
+     * and by default that is all of them. `{ false }` still leaves [handlers] working, because a
+     * handler is consulted *before* this predicate: answering from memory is a different question
+     * from taking a request off the network, and a fixture pays none of the costs a refetch does.
      *
-     * Worth turning off for a pool driving real sites that needs nothing rewritten. Interception
-     * refetches through `HttpURLConnection`, which is not the browser's network stack — no HTTP/2,
-     * no shared cache, redirects followed by hand, and a `POST` navigation passed through untouched
-     * because the platform hook exposes no request body. Off, a document loads exactly as the
-     * browser would load it; on, it loads as this library refetched it.
+     * When it is on, this is a throughput control rather than a preference. Interception is
+     * synchronous and blocks the resource it is handling, and a real site is mostly images, fonts,
+     * CSS and script — none of which need a header rewritten, and all of which compete for the same
+     * small pool of WebView worker threads as the document and the API calls that do. Intercepting
+     * the lot made `developer.mozilla.org` take longer than thirty seconds to reach
+     * `DOMContentLoaded` in a lane, which the workflow correctly reported as a navigation timeout
+     * against a page that was visibly on screen.
+     *
+     * [isDocumentOrData] is the predicate to reach for, and what [AUTOMATION] uses: it keeps
+     * documents and data, which is exactly what CORS relaxation and the tap are for. `{ true }`
+     * sees everything.
+     *
+     * Main-frame requests arrive here like any other, tagged [InterceptedRequest.isForMainFrame].
+     * That is how a policy says "rewrite my XHR, but let the browser fetch my pages":
+     *
+     * ```
+     * intercept = { !it.isForMainFrame && isDocumentOrData(it) }
+     * ```
+     *
+     * which buys back the browser's own document load at the cost named on [permissiveCors] — no
+     * CSP widening, since there is no intercepted document to widen it on.
      */
-    val interceptMainFrame: Boolean = true,
-    /**
-     * Which requests to take over. Everything else goes to the platform untouched and unreported.
-     *
-     * This is a throughput control, not a preference. Interception is synchronous and blocks the
-     * resource it is handling, and a real site is mostly images, fonts, CSS and script — none of
-     * which need a header rewritten, and all of which compete for the same small pool of WebView
-     * worker threads as the document and the API calls that do. Intercepting the lot made
-     * `developer.mozilla.org` take longer than thirty seconds to reach `DOMContentLoaded` in a
-     * lane, which the workflow correctly reported as a navigation timeout against a page that was
-     * visibly on screen.
-     *
-     * The default keeps documents and data, which is exactly what unframing, CORS and the tap are
-     * for. Replace it with `{ true }` to see everything.
-     */
-    val intercept: (InterceptedRequest) -> Boolean = ::isDocumentOrData,
-    /** Consulted in order before anything hits the network. */
+    val intercept: (InterceptedRequest) -> Boolean = { false },
+    /** Consulted in order before anything hits the network, and before [intercept] is asked. */
     val handlers: List<RequestHandler> = emptyList(),
 ) {
     companion object {
         const val DEFAULT_MAX_CAPTURED_BODY_BYTES: Int = 256 * 1024
 
-        /** Observe traffic, change nothing. Useful for seeing what a page fetches before deciding. */
-        val OBSERVE_ONLY: InterceptionPolicy = InterceptionPolicy(permissiveCors = false)
+        /**
+         * Interception doing its whole job: documents and data taken off the network, CORS and CSP
+         * relaxed, bodies captured. For a pool driving sites the app deliberately automates — and
+         * the thing to reach for when a workflow needs a header rewritten or the tap to see a
+         * document.
+         *
+         * The cost applies to every real site loaded under it, and it is the cost the default
+         * exists to avoid: an intercepted document is one this library refetched through
+         * `HttpURLConnection`, not one the browser's network stack fetched. Redirects are followed
+         * by hand (so the document's `location` is the URL that was *requested* rather than the one
+         * that answered), the cookie jar is bridged across, and a `POST` navigation is passed
+         * through untouched because the platform hook exposes no request body. A site that
+         * fingerprints its clients will notice.
+         */
+        val AUTOMATION: InterceptionPolicy =
+            InterceptionPolicy(
+                permissiveCors = true,
+                intercept = ::isDocumentOrData,
+            )
+
+        /**
+         * See what a page fetches before deciding what to do about it: documents and data reach
+         * the [NetworkTap], and no response header is rewritten.
+         *
+         * Not free, and not a read-only view of the browser's traffic — an exchange only reaches
+         * the tap because this library fetched it, so everything [AUTOMATION] says about a
+         * refetched document applies here too. It changes nothing about the *response*; it changes
+         * who fetched it.
+         */
+        val OBSERVE_ONLY: InterceptionPolicy = InterceptionPolicy(intercept = ::isDocumentOrData)
     }
 }
 

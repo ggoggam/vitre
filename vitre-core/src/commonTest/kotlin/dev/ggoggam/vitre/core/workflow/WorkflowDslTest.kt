@@ -159,4 +159,46 @@ class WorkflowDslTest {
         assertEquals(2, build(loggedIn = false).steps.size)
         assertEquals(listOf(WorkflowStep.Navigate("https://example.com/account")), build(loggedIn = true).steps)
     }
+
+    @Test
+    fun for_each_builds_the_same_step_as_the_constructor() {
+        val built =
+            workflow("wf", "fan-out") {
+                forEach(over = "results", item = "product", into = "details", limit = 5) {
+                    navigate(template("{product.url}"))
+                    extract("#price", into = "price")
+                }
+            }
+
+        assertEquals(
+            listOf<WorkflowStep>(
+                WorkflowStep.ForEach(
+                    over = "results",
+                    item = "product",
+                    into = "details",
+                    body =
+                        listOf(
+                            WorkflowStep.Navigate(template("{product.url}")),
+                            WorkflowStep.Extract(selector = "#price", into = "price"),
+                        ),
+                    limit = 5,
+                ),
+            ),
+            built.steps,
+        )
+    }
+
+    /** A body that binds its item to nothing, or to a name no template could read, is a build-time typo. */
+    @Test
+    fun for_each_rejects_an_item_name_a_template_could_not_read() {
+        assertFailsWith<IllegalArgumentException> {
+            workflow("wf", "bad") { forEach(over = "results", item = "", into = "out") {} }
+        }
+        assertFailsWith<IllegalArgumentException> {
+            workflow("wf", "bad") { forEach(over = "results", item = "my item", into = "out") {} }
+        }
+        assertFailsWith<IllegalArgumentException> {
+            workflow("wf", "bad") { forEach(over = "results", item = "p", into = "out", limit = 0) {} }
+        }
+    }
 }

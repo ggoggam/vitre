@@ -39,7 +39,6 @@ class AndroidNetworkInterceptor(
         val url = request.url?.toString() ?: return null
         val scheme = request.url.scheme?.lowercase()
         if (scheme != "http" && scheme != "https") return null
-        if (request.isForMainFrame && !policy.interceptMainFrame) return null
 
         val method = request.method?.uppercase() ?: "GET"
         val headers = request.requestHeaders.orEmpty()
@@ -52,9 +51,10 @@ class AndroidNetworkInterceptor(
 
         if (!policy.intercept(intercepted)) {
             // Declining a stylesheet is routine and reporting it would drown the tap. Declining a
-            // *document* is worth saying out loud: it is the one case where the site's framing
-            // headers reach the renderer intact, so the lane fills with an error page and nothing
-            // anywhere explains why.
+            // *document* is recorded, because it is the difference between a page the browser
+            // fetched and a page this library refetched — which is the first thing worth knowing
+            // when a lane renders something nobody expected, and which under the default policy is
+            // every page. The tap is where that answer lives.
             if (intercepted.looksLikeDocument()) {
                 recorder.passthrough(intercepted, "declined by InterceptionPolicy.intercept")
             }

@@ -13,18 +13,68 @@ import kotlin.test.fail
 /**
  * "I act on the element a snapshot showed me, and if it is not there any more I am told so."
  *
- * The second half is the point. Every expression the engine generates resolves a missing element to
- * `null` and carries on — `…?.click()`, `(…?.textContent ?? '')` — which is right for a selector
- * that might legitimately match nothing and wrong for a handle, because a handle is a claim that the
- * element was seen. Without a guard, an agent acting on a stale handle is told it succeeded.
+ * Handles retain useful stale-document diagnostics. Click also validates its resolved target in
+ * the same JavaScript turn as dispatch, for selectors as well as handles.
  */
 class HandleLocatorTest {
-    /** Answers the guard with [status] and everything else with [result]. */
+    @Test
+    fun input_actions_preserve_status_inside_the_handle_guard() =
+        runTest {
+            val actions =
+                listOf(
+                    WorkflowStep.Input(handle("e1"), "hello"),
+                    WorkflowStep.Input.SetChecked(handle("e1"), true),
+                    WorkflowStep.Input.SelectOption(handle("e1"), "Large"),
+                    WorkflowStep.Input.Press(handle("e1"), "a"),
+                )
+            for (action in actions) {
+                val controller =
+                    FakeWebViewController().apply {
+                        nextEvalResult = { """{"status":"ok","value":"ok"}""" }
+                    }
+                val workflow = Workflow("input", "input", listOf(action))
+                val result = WorkflowEngine(controller, EmptyCoroutineContext).run(workflow).toList().last()
+
+                assertIs<WorkflowEvent.Completed>(result)
+                assertTrue("isConnected" in controller.evaluatedScripts.single())
+            }
+        }
+
+    @Test
+    fun atomic_handle_results_preserve_extracted_strings() =
+        runTest {
+            val controller = controllerFor("ok", "\"line one\\n\\\"line two\\\"\"")
+            val workflow = Workflow("read", "read", listOf(WorkflowStep.Extract(handle("opaque:ref"), into = "value")))
+            val result = WorkflowEngine(controller, EmptyCoroutineContext).run(workflow).toList().last()
+            assertEquals("line one\n\"line two\"", assertIs<WorkflowEvent.Completed>(result).variables["value"])
+            assertEquals(1, controller.evaluatedScripts.size)
+        }
+
+    @Test
+    fun wait_for_rechecks_handle_validity_on_every_poll() =
+        runTest {
+            val controller =
+                FakeWebViewController().apply {
+                    var polls = 0
+                    nextEvalResult = {
+                        if (polls++ == 0) """{"status":"ok","value":false}""" else """{"status":"detached"}"""
+                    }
+                }
+            val workflow = Workflow("wait", "wait", listOf(WorkflowStep.WaitFor(handle("opaque:ref"))))
+            val result = WorkflowEngine(controller, EmptyCoroutineContext).run(workflow).toList().last()
+            assertTrue("removed" in assertIs<WorkflowEvent.Failed>(result).message)
+            assertEquals(2, controller.evaluatedScripts.size)
+        }
+
+    /** Answers the atomic guard/action envelope with [status] and [result]. */
     private fun controllerFor(
         status: String,
         result: String = "null",
     ) = FakeWebViewController().apply {
-        nextEvalResult = { script -> if ("isConnected" in script) "\"$status\"" else result }
+        nextEvalResult = { script ->
+            val value = if ("el.click();" in script) "true" else result
+            if ("isConnected" in script) "{\"status\":\"$status\",\"value\":$value}" else value
+        }
     }
 
     @Test
@@ -44,7 +94,8 @@ class HandleLocatorTest {
             val click = controller.evaluatedScripts.last()
             assertTrue("__vitre" in click, "handles live in the page, not in Kotlin: $click")
             assertTrue("\"e7\"" in click, click)
-            assertTrue(click.endsWith("?.click()"), click)
+            assertTrue("el.click();" in click, click)
+            assertEquals(1, controller.evaluatedScripts.size, "validation and action must be atomic")
         }
 
     @Test
@@ -63,11 +114,7 @@ class HandleLocatorTest {
             val failed = assertIs<WorkflowEvent.Failed>(events.last())
             assertTrue("e7" in failed.message, failed.message)
             assertTrue("snapshot" in failed.message.lowercase(), "must say how to recover: ${failed.message}")
-            // And it must not have gone ahead and clicked whatever `null?.click()` does.
-            assertTrue(
-                controller.evaluatedScripts.none { it.endsWith("?.click()") },
-                "the click ran anyway: ${controller.evaluatedScripts}",
-            )
+            assertEquals(1, controller.evaluatedScripts.size)
         }
 
     @Test

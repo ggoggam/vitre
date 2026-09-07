@@ -24,11 +24,22 @@ annotation class WorkflowDsl
  * and no lambda helps there.
  *
  * **The block assembles a list of steps; it does not execute one.** A curly-brace block reads like
- * a program, and this one is not: the engine walks the finished list start to finish, with no
- * branch, no loop and no retry. Ordinary Kotlin control flow works here and runs at *build* time,
- * so `if (staging) navigate(…)` decides what the workflow contains before the workflow ever runs.
- * Nothing in the block can see the page, and nothing can read a variable an earlier step extracted
- * — those exist only while the engine is running, long after this returns.
+ * a program, and this one is not: it runs once, up front, to produce a list the engine walks later.
+ * Ordinary Kotlin control flow works here and runs at *build* time, so `if (staging) navigate(…)`
+ * decides what the workflow **contains** before the workflow ever runs. Nothing in the block can see
+ * the page, and nothing can read a variable an earlier step extracted — those exist only while the
+ * engine is running, long after this returns.
+ *
+ * When the decision belongs to the *run* rather than to the build, [WorkflowScope.runIf] is the one
+ * to reach for: it appends a [WorkflowStep.If] the engine evaluates against the page. The two sit
+ * one line apart and look nothing alike on purpose —
+ *
+ * ```
+ * if (staging) navigate(stagingUrl)             // decided now; the workflow may not contain it
+ * runIf(exists("#cookie-banner")) {             // decided later, against the page
+ *     click("#cookie-banner .accept")
+ * }
+ * ```
  *
  * Every function is named for the step it appends, so a `Failed` event naming `Input(…)` points at
  * the `input(…)` line that produced it.
@@ -72,7 +83,86 @@ class WorkflowScope internal constructor() {
         collected += step
     }
 
+    /**
+     * Appends a [WorkflowStep.If]: run [then] when [condition] holds at that point in the run, and
+     * [otherwise] when it does not.
+     *
+     * Named `runIf` rather than `if` — which Kotlin would not allow anyway — so that the line cannot
+     * be misread as the build-time `if` described on [workflow]. This one is part of the workflow,
+     * sees the page, and can read variables earlier steps extracted.
+     *
+     * ```
+     * extract("#status", into = "status")
+     * runIf(variableEquals("status", "expired")) {
+     *     click("#refresh")
+     *     waitFor("#status")
+     * }
+     * ```
+     *
+     * The else branch is a named argument rather than a second trailing lambda, because Kotlin gives
+     * the trailing position to exactly one block and the *then* branch has the better claim on it:
+     *
+     * ```
+     * runIf(exists("#login-form"), otherwise = { click("#continue") }) {
+     *     input("#password", secret)
+     *     click("#submit")
+     * }
+     * ```
+     */
+    fun runIf(
+        condition: Condition,
+        otherwise: (WorkflowScope.() -> Unit)? = null,
+        then: WorkflowScope.() -> Unit,
+    ) = step(
+        WorkflowStep.If(
+            condition = condition,
+            then = WorkflowScope().apply(then).build(),
+            otherwise = otherwise?.let { WorkflowScope().apply(it).build() }.orEmpty(),
+        ),
+    )
+
+    /**
+     * Appends a [WorkflowStep.ForEach]: run [body] once per element of the JSON array in [over],
+     * with the element bound as [item], and collect what each run produced into [into].
+     *
+     * ```
+     * extractRows(rows = "li.result", into = "results") {
+     *     column("title", "h3")
+     *     column("url", "a", from = Source.Property("href"))
+     * }
+     * forEach(over = "results", item = "product", into = "details") {
+     *     navigate(template("{product.url}"))
+     *     waitFor("#price")
+     *     extract("#price", into = "price")
+     * }
+     * ```
+     *
+     * Runs against the page, not at build time, which is what lets it iterate over something an
+     * earlier step extracted — the same distinction [runIf] draws against a Kotlin `if`, and the
+     * reason a Kotlin `for` over a fixed list is *not* what this is: that would append the body's
+     * steps N times, and could not visit pages it does not know yet. See [WorkflowStep.ForEach]
+     * for what the body sees and what a fan-out costs.
+     */
+    fun forEach(
+        over: String,
+        item: String,
+        into: String,
+        limit: Int = 20,
+        body: WorkflowScope.() -> Unit,
+    ) = step(
+        WorkflowStep.ForEach(
+            over = over,
+            item = item,
+            into = into,
+            body = WorkflowScope().apply(body).build(),
+            limit = limit,
+        ),
+    )
+
     fun navigate(url: String) = step(WorkflowStep.Navigate(url))
+
+    /** [navigate], to an address assembled from variables — `navigate(template("…/{sku}"))`. */
+    fun navigate(url: Template) = step(WorkflowStep.Navigate(url))
 
     fun loadHtml(
         html: String,
@@ -150,6 +240,17 @@ class WorkflowScope internal constructor() {
         selector: String,
         key: String,
     ) = step(WorkflowStep.Input.Press(selector, key))
+
+    /** [input], with text assembled from variables — `input("#q", template("{brand} {model}"))`. */
+    fun input(
+        locator: Locator,
+        text: Template,
+    ) = step(WorkflowStep.Input(locator, text))
+
+    fun input(
+        selector: String,
+        text: Template,
+    ) = step(WorkflowStep.Input(selector, text))
 
     fun extract(
         locator: Locator,

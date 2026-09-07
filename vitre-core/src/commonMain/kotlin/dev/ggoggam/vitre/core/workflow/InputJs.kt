@@ -31,10 +31,13 @@ import dev.ggoggam.vitre.core.bridge.jsString
  * [SnapshotJs.statusOf] exists. [explain] turns a status into the sentence the caller is told.
  */
 internal object InputJs {
-    /** The one script a [WorkflowStep.Input] runs. One round trip, one status back. */
-    fun script(step: WorkflowStep.Input): String =
+    /** The one script a [WorkflowStep.Input] runs, with [text] resolved by the engine. */
+    fun script(
+        step: WorkflowStep.Input,
+        text: String,
+    ): String =
         when (step) {
-            is WorkflowStep.Input.Fill -> fill(step)
+            is WorkflowStep.Input.Fill -> fill(step, text)
             is WorkflowStep.Input.SetChecked -> setChecked(step)
             is WorkflowStep.Input.SelectOption -> selectOption(step)
             is WorkflowStep.Input.Press -> press(step)
@@ -49,6 +52,7 @@ internal object InputJs {
     fun explain(
         step: WorkflowStep.Input,
         status: String,
+        text: String,
     ): String? {
         val where = step.locator.describe()
         return when {
@@ -99,7 +103,7 @@ internal object InputJs {
             }
 
             status.startsWith(NO_OPTION) -> {
-                "No option of $where matches `${step.text}`. Options are matched on their value " +
+                "No option of $where matches `$text`. Options are matched on their value " +
                     "first and then on the label a user reads. This one offers: " +
                     status.removePrefix(NO_OPTION)
             }
@@ -112,12 +116,15 @@ internal object InputJs {
 
     // ── The scripts ────────────────────────────────────────────────────────────────────────────
 
-    private fun fill(step: WorkflowStep.Input.Fill): String =
+    private fun fill(
+        step: WorkflowStep.Input.Fill,
+        text: String,
+    ): String =
         "(function(){$OPTION_LABEL$PICK_OPTION$NATIVE_SET" +
             "var el=${LocatorJs.first(step.locator)};" +
             "if(!el)return 'missing';" +
             "if(el.disabled)return 'disabled';" +
-            "var T=${jsString(step.text)};" +
+            "var T=${jsString(text)};" +
             "var t=(el.tagName||'').toUpperCase();" +
             // A <select> is "filled" by picking an option — the same match SelectOption makes, so
             // the two spellings cannot drift into disagreeing about what identifies one.

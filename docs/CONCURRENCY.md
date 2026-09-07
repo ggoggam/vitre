@@ -74,7 +74,8 @@ These were live bugs, not hypotheticals:
 |---|---|---|
 | iOS drove `WKWebView` from whatever dispatcher the collector happened to be on | Android hand-rolled `webView.post{}`; iOS hand-rolled nothing | Confinement moved into the shared serializer, so neither actual can forget |
 | A script whose page navigated away hung the workflow forever | Both platforms drop a pending script callback when the document goes, without invoking it | `evaluate` is bounded and raises `ScriptTimeoutException` |
-| …and a step after a click that navigated then failed a workflow that was fine | Same cause, but the page started the navigation, so ordering against `navigate` could not rule it out — and waiting out the timeout reported a healthy page as a slow one | `evaluate` watches for the document being replaced and resubmits **once**, against the page that settles in its place |
+| A page-initiated navigation loses a script callback | Ordering against `navigate` cannot prevent page-initiated navigation, and the script may already have changed state | `evaluate` submits once and reports `ScriptOutcomeUnknownException` when the document is replaced; callers inspect state before retrying mutations, while read-only `WaitFor` polling may retry |
+| A caller deadline was reported as the library's own timeout | Catching every `TimeoutCancellationException` also caught an outer `withTimeout` | Navigation, script evaluation, and promise settlement use `withTimeoutOrNull` to translate only their own timeout; caller cancellation propagates |
 | `AwaitMessage` hung forever when it lost a race | The page posted before the step subscribed; a no-replay `SharedFlow` drops that silently | `WebViewInbox` buffers unread messages and consumes each exactly once |
 | Cancelling a run reported it as a failure | The engine caught `Throwable`, including `CancellationException` | Every self-imposed timeout becomes a domain exception at the point it expires, so a cancellation reaching the top can only be the collector's |
 | `WaitFor(timeoutMs = 10_000)` could run for a minute | Elapsed time counted poll intervals, not the round trips between them | Bounded on wall clock |
@@ -109,9 +110,12 @@ and returns the interactive and text-bearing elements with stable handles, as an
 rather than HTML. `Locator.Handle` makes every selector-addressed step handle-addressed for free,
 since they all already took a `Locator`. This was the single largest gap and it did come before MCP.
 
-**2. Variables do not flow between steps.** Still true for workflows, and it stopped mattering for
-agents: a tool call's result goes back to the model, which composes the next call itself. The model
-*is* the variable store. Left alone rather than built for a caller that no longer needs it.
+**2. Variables do not flow between steps.** ✅ Closed, in the two places a workflow actually needs
+it. `Template` lets `Navigate.url` and `Input.text` read variables (`template("…/{sku}")`), and
+`ForEach` runs a body once per element of an array an earlier step extracted, binding the element
+as a variable. Nothing more general was built: for agents a tool call's result goes back to the
+model, which composes the next call itself — the model *is* the variable store — and a workflow
+that needs to compute over a variable still does so in Kotlin after the run.
 
 **3. Sessions were implicit.** ✅ `WebViewSessions` in `vitre-mcp` maps a name to a controller,
 and the host registers its own. It stayed out of core, which is right: an app with one WebView never

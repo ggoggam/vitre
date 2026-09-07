@@ -23,7 +23,7 @@ import dev.ggoggam.vitre.core.webview.DEFAULT_SCRIPT_TIMEOUT_MS
  * var pool by remember { mutableStateOf<FramePool?>(null) }
  * VitreFrameHost(
  *     laneCount = 4,
- *     policy = InterceptionPolicy(handlers = shops.map { it.handler }),
+ *     policy = InterceptionPolicy(permissiveCors = true, handlers = shops.map { it.handler }),
  *     onPoolReady = { pool = it },
  *     onUnavailable = { reason -> … },
  * )
@@ -41,6 +41,12 @@ expect fun VitreFrameHost(
      * the surplus work.
      */
     laneCount: Int = 4,
+    /**
+     * What the lanes' interceptor may do. Inert by default: handlers are honoured, and everything
+     * else loads through the browser's own network stack, which is what a lane pointed at a real
+     * site wants. [InterceptionPolicy.AUTOMATION] opts into refetching, CORS relaxation and the
+     * tap — read what it costs before pointing it at a site the app does not control.
+     */
     policy: InterceptionPolicy = InterceptionPolicy(),
     /**
      * How long a lane waits for a document to parse.

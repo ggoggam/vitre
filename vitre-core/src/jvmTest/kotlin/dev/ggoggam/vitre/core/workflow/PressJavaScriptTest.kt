@@ -14,7 +14,7 @@ class PressJavaScriptTest {
         val scripts =
             buildJsonObject {
                 for (key in listOf("a", "A", "1", "!", "é", "Space", "Enter", "Escape")) {
-                    put(key, InputJs.script(WorkflowStep.Input.Press("#q", key)))
+                    put(key, InputJs.script(WorkflowStep.Input.Press("#q", key), key))
                 }
             }
         val runner = requireNotNull(javaClass.getResource("/press-events.cjs")).readText()

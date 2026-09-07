@@ -20,15 +20,18 @@ data class LaneRun(
      * and the same id comes back two or three times in a single scenario. Keying a list on it crashed
      * the Lanes tab outright — on any low-RAM or sub-2GB device, where `forDevice` hands back two
      * lanes for the sample's four sites.
+     *
+     * [laneId] is where the task is *now*: a fan-out hands the lane back and borrows another
+     * afterwards, so it moves. Null only for a task that failed before it was ever given one.
      */
     val taskIndex: Int,
-    val laneId: String,
+    val laneId: String?,
     val site: LaneSite,
     val workflow: Workflow,
     val events: List<WorkflowEvent>,
     val elapsedMs: Long?,
 ) {
-    val state: RunState = runStateOf(workflow.steps.size, events)
+    val state: RunState = runStateOf(workflow, events)
 
     /** Empty until the lane completes: a half-scraped page yields half a price list. */
     val offers: List<Offer> =

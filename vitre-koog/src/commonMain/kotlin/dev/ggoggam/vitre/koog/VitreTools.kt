@@ -3,9 +3,11 @@ package dev.ggoggam.vitre.koog
 import ai.koog.agents.core.tools.ToolBase
 import ai.koog.agents.core.tools.ToolRegistry
 import ai.koog.agents.core.tools.ToolRegistryBuilder
+import dev.ggoggam.vitre.agent.PageActionKind
 import dev.ggoggam.vitre.agent.PageDriver
 import dev.ggoggam.vitre.koog.tools.AcquireLeaseTool
 import dev.ggoggam.vitre.koog.tools.AwaitMessageTool
+import dev.ggoggam.vitre.koog.tools.CapabilitiesTool
 import dev.ggoggam.vitre.koog.tools.ClickTool
 import dev.ggoggam.vitre.koog.tools.EvaluateTool
 import dev.ggoggam.vitre.koog.tools.ExtractRowsTool
@@ -50,6 +52,7 @@ fun vitreWebViewTools(
 ): List<ToolBase<*, *>> =
     buildList {
         add(ListSessionsTool(driver))
+        add(CapabilitiesTool(driver, includeLeaseTools))
         add(SnapshotTool(driver))
         add(NavigateTool(driver))
         add(ClickTool(driver))
@@ -65,6 +68,8 @@ fun vitreWebViewTools(
             add(AcquireLeaseTool(driver))
             add(ReleaseLeaseTool(driver))
         }
+    }.filter { tool ->
+        PageActionKind.entries.firstOrNull { it.toolName == tool.name }?.let(driver::isActionEnabled) ?: true
     }
 
 /** Adds [vitreWebViewTools] to a registry being built. */

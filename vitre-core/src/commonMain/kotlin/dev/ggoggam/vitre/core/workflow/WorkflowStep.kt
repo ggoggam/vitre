@@ -1,9 +1,18 @@
 package dev.ggoggam.vitre.core.workflow
 
 sealed class WorkflowStep {
+    /**
+     * Loads [url], which may be assembled from variables — see [Template].
+     *
+     * The [String] constructor is the one nearly every workflow wants and it means a *literal* URL,
+     * with no interpolation of any kind. Reach for [template] only when the address depends on
+     * something an earlier step extracted.
+     */
     data class Navigate(
-        val url: String,
-    ) : WorkflowStep()
+        val url: Template,
+    ) : WorkflowStep() {
+        constructor(url: String) : this(Template.Literal(url))
+    }
 
     /**
      * Loads [html] directly, without a network round trip.
@@ -25,6 +34,12 @@ sealed class WorkflowStep {
         constructor(selector: String, timeoutMs: Long = 10_000L) : this(css(selector), timeoutMs)
     }
 
+    /**
+     * Resolves exactly one connected, enabled target with visible layout, then calls its DOM click
+     * in the same JavaScript turn. Rejects missing, ambiguous, hidden, disabled, or inert targets.
+     * Success confirms synthetic dispatch, not trusted user input, occlusion checks, or completion
+     * of the site's resulting operation. Add a WaitFor or extraction to verify that postcondition.
+     */
     data class Click(
         val locator: Locator,
     ) : WorkflowStep() {
@@ -55,11 +70,10 @@ sealed class WorkflowStep {
         /**
          * What this step will apply, as one line of text.
          *
-         * For logs and failure messages only — nothing reads it back. The direction matters: a
-         * `Boolean` *rendered* as `"true"` is a legible trace, whereas a `"true"` *parsed* as a
-         * boolean is exactly the guess this family exists to remove.
+         * Fill resolves its template against workflow variables before typing. The other actions
+         * expose a literal for logs and failure messages; their typed fields drive the action.
          */
-        abstract val text: String
+        abstract val text: Template
 
         /**
          * Types [text] into a text field, a `<textarea>`, a `<select>` or a contenteditable
@@ -80,9 +94,13 @@ sealed class WorkflowStep {
          */
         data class Fill(
             override val locator: Locator,
-            override val text: String,
+            override val text: Template,
         ) : Input() {
-            constructor(selector: String, text: String) : this(css(selector), text)
+            constructor(locator: Locator, text: String) : this(locator, Template.Literal(text))
+
+            constructor(selector: String, text: String) : this(css(selector), Template.Literal(text))
+
+            constructor(selector: String, text: Template) : this(css(selector), text)
         }
 
         /**
@@ -105,7 +123,7 @@ sealed class WorkflowStep {
         ) : Input() {
             constructor(selector: String, checked: Boolean) : this(css(selector), checked)
 
-            override val text: String get() = checked.toString()
+            override val text: Template get() = Template.Literal(checked.toString())
         }
 
         /**
@@ -129,7 +147,7 @@ sealed class WorkflowStep {
         ) : Input() {
             constructor(selector: String, option: String) : this(css(selector), option)
 
-            override val text: String get() = option
+            override val text: Template get() = Template.Literal(option)
         }
 
         /**
@@ -158,7 +176,7 @@ sealed class WorkflowStep {
         ) : Input() {
             constructor(selector: String, key: String) : this(css(selector), key)
 
-            override val text: String get() = key
+            override val text: Template get() = Template.Literal(key)
         }
 
         /**
@@ -170,6 +188,16 @@ sealed class WorkflowStep {
          * resolves here and builds a [Fill], so the compatibility is exact rather than approximate.
          */
         companion object {
+            operator fun invoke(
+                locator: Locator,
+                text: Template,
+            ): Fill = Fill(locator, text)
+
+            operator fun invoke(
+                selector: String,
+                text: Template,
+            ): Fill = Fill(css(selector), text)
+
             operator fun invoke(
                 locator: Locator,
                 text: String,
@@ -304,4 +332,86 @@ sealed class WorkflowStep {
     data class PostMessage(
         val message: String,
     ) : WorkflowStep()
+
+    /**
+     * Runs [then] when [condition] holds, and [otherwise] when it does not.
+     *
+     * The first step that contains steps, and the first that makes a workflow something other than
+     * a straight line. What it is for is the page that is *sometimes* there — a cookie banner, an
+     * interstitial, a "did you mean" page, a login form that only appears when the session lapsed.
+     * Before this, the only ways to handle one were to fail the whole run or to smuggle the branch
+     * into an [EvaluateJs] blob the engine cannot report on.
+     *
+     * **This is not the `if` you write in a `workflow { }` block.** Ordinary Kotlin `if` in a
+     * builder still runs at *build* time and decides what the workflow contains; this one is part of
+     * the workflow and runs against the page, where it can see what an earlier step extracted. The
+     * DSL calls it `runIf` so the two cannot be confused at a glance — see [WorkflowScope.runIf].
+     *
+     * Nesting is unbounded, and step numbering follows it: a failure inside a branch reports a
+     * [StepPath] like `2.then.0` rather than a flat index that would mean nothing.
+     */
+    data class If(
+        val condition: Condition,
+        val then: List<WorkflowStep>,
+        val otherwise: List<WorkflowStep> = emptyList(),
+    ) : WorkflowStep()
+
+    /**
+     * Runs [body] once per element of the JSON array in the variable [over], and stores what each
+     * run produced in [into].
+     *
+     * The step that turns "here are the search results" into "here is what each result's own page
+     * says", which no straight-line workflow can express: the pages to visit are not known when the
+     * workflow is written, they came out of the [ExtractRows] one step earlier. [item] is the name
+     * the body knows the current element by. An object element binds a variable per field —
+     * `{item}.title`, `{item}.url` — and `{item}` itself is the whole element; a primitive element
+     * is just `{item}`. Those are ordinary variables, so a [Template] reads them
+     * (`navigate(template("{product.url}"))`) and so does a [Condition].
+     *
+     * ### What the body sees, and what it leaves behind
+     *
+     * Each item starts from a *copy* of the variables as they stood when the step began, with the
+     * bindings added. Whatever the body extracts goes into that copy and nowhere else — items do
+     * not see each other, and the workflow after the step does not see them by name. It sees
+     * [into], a JSON array with one [FanOutResult] per item in item order: the element, the
+     * variables the body set, and the failure message if it failed. `decode<List<FanOutResult>>`
+     * reads it back.
+     *
+     * A failing item is recorded in its result and **does not fail the step**. Twenty product pages
+     * and one bot check is the normal case, and a step that threw away nineteen answers over the
+     * twentieth would be the wrong tool for the job it exists for. This mirrors [ExtractRows],
+     * where a missing column is an empty field rather than a lost row. What *does* fail the step is
+     * a workflow bug: [over] not set, or holding something other than a JSON array.
+     *
+     * ### A fan-out is a page barrier
+     *
+     * Items run on whatever lanes the engine's `LaneSource` has — several at once on a pool, one
+     * after another on a single WebView — and to make that possible without deadlock the workflow
+     * gives up its own lane before the first item starts and takes a fresh one afterwards. So the
+     * step after a `ForEach` starts on a blank page: the variables survive, the document does not.
+     * A `WaitFor` written as though the search results were still on screen will time out, and
+     * that is the honest outcome — see `LaneSource` for why the alternative is worse.
+     *
+     * The events for an item arrive wrapped in [WorkflowEvent.FanOutItem], which says which item
+     * and which lane. Body steps keep one [StepPath] however many items run them —
+     * `2.each.0` — because a path names a step in the program, not an execution of it.
+     *
+     * [limit] caps the number of items, for the same reason [ExtractRows.limit] does and one more:
+     * each item here is a page load, not a row read.
+     */
+    data class ForEach(
+        val over: String,
+        val item: String,
+        val into: String,
+        val body: List<WorkflowStep>,
+        val limit: Int = 20,
+    ) : WorkflowStep() {
+        init {
+            require(item.isNotBlank()) { "ForEach needs a name to bind each item to" }
+            require(item.all { it.isLetterOrDigit() || it == '_' || it == '-' || it == '.' }) {
+                "`$item` is not a variable name. Use letters, digits, `_`, `-` or `.`."
+            }
+            require(limit > 0) { "ForEach limit must be positive, was $limit" }
+        }
+    }
 }
