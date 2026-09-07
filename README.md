@@ -117,10 +117,10 @@ Published to Maven Central, so `mavenCentral()` in your repositories is all the 
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            implementation("dev.ggoggam.vitre:vitre-core:0.1.2")
-            implementation("dev.ggoggam.vitre:vitre-compose:0.1.2") // optional
-            implementation("dev.ggoggam.vitre:vitre-mcp:0.1.2")     // optional
-            implementation("dev.ggoggam.vitre:vitre-koog:0.1.2")    // optional
+            implementation("dev.ggoggam.vitre:vitre-core:0.2.0")
+            implementation("dev.ggoggam.vitre:vitre-compose:0.2.0") // optional
+            implementation("dev.ggoggam.vitre:vitre-mcp:0.2.0")     // optional
+            implementation("dev.ggoggam.vitre:vitre-koog:0.2.0")    // optional
         }
     }
 }
