@@ -170,6 +170,18 @@ internal object InputJs {
         val event =
             "{key:${jsString(key.key)},code:${jsString(key.code)}," +
                 "keyCode:${key.keyCode},which:${key.keyCode},bubbles:true,cancelable:true}"
+        // keypress carries the produced character, not the physical key's legacy code. React
+        // ignores printable keypress events with charCode=0. Enter carries a carriage return.
+        val keypress =
+            if (key.character) {
+                val charCode = if (key.key == "Enter") 13 else key.key.single().code
+                val options =
+                    "{key:${jsString(key.key)},code:${jsString(key.code)}," +
+                        "keyCode:$charCode,which:$charCode,charCode:$charCode,bubbles:true,cancelable:true}"
+                "if(live)el.dispatchEvent(new KeyboardEvent('keypress',$options));"
+            } else {
+                ""
+            }
         return "(function(){var el=${LocatorJs.first(step.locator)};" +
             "if(!el)return 'missing';" +
             // A page binds its handler to the field, and a key event dispatched at an unfocused
@@ -180,7 +192,7 @@ internal object InputJs {
             // Browsers fire keypress only for keys that produce a character, and skip it entirely
             // when keydown was cancelled. Both are worth copying: a page that suppresses a key
             // expects the rest of the sequence to stop.
-            (if (key.character) "if(live)el.dispatchEvent(new KeyboardEvent('keypress',o));" else "") +
+            keypress +
             "el.dispatchEvent(new KeyboardEvent('keyup',o));" +
             "return 'ok';})()"
     }
