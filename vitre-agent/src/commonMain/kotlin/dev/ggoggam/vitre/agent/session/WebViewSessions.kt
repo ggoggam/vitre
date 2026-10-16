@@ -26,7 +26,7 @@ data class WebViewSession(
      * Where a tap can be got from today, which is not everywhere:
      *
      *  - **A pool, on all three platforms.** `AndroidWebViewPool.tap`, `IosWebViewPool.tap`,
-     *    `KcefWebViewPool.tap`, or `FramePool.tap`, each wrapped in
+     *    `CefWebViewPool.tap`, or `FramePool.tap`, each wrapped in
      *    [dev.ggoggam.vitre.core.net.retainIn].
      *  - **A single Android WebView**, by handing `AndroidWebViewController` an
      *    `AndroidNetworkInterceptor`, which is itself a tap.

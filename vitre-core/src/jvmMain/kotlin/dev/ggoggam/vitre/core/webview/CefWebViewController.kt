@@ -1,7 +1,5 @@
 package dev.ggoggam.vitre.core.webview
 
-import dev.datlag.kcef.KCEFBrowser
-import dev.datlag.kcef.KCEFClient
 import dev.ggoggam.vitre.core.bridge.DefaultWebViewBridge
 import dev.ggoggam.vitre.core.bridge.WebViewBridge
 import dev.ggoggam.vitre.core.bridge.WebViewInbox
@@ -17,6 +15,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.cef.CefClient
 import org.cef.browser.CefBrowser
 import org.cef.browser.CefDevToolsClient
 import org.cef.browser.CefFrame
@@ -37,7 +36,7 @@ import javax.imageio.ImageIO
 import javax.imageio.ImageWriteParam
 
 /**
- * Wraps a Kotlin CEF Browser, which it creates itself — see [create], and the ordering rule that
+ * Wraps a JCEF browser, which it creates itself — see [create], and the ordering rule that
  * makes that non-negotiable.
  *
  * The controller forwards navigation/script/message I/O, installs `window.vitre` through a
@@ -49,12 +48,12 @@ import javax.imageio.ImageWriteParam
  * Compose, and why neither is a trade worth making.
  *
  * Disposing [browser] stays the owner's job, as on the other platforms — [close] gives the client
- * its handlers back and nothing more. `KcefWebViewPool` does it for a pool; a host that called
- * [create] itself does it after the component has left the window.
+ * its handlers back and nothing more. [disposeBrowser] is that teardown: `CefWebViewPool` calls it
+ * for a pool, and a host that called [create] itself calls it once the surface has left the window.
  *
  * ### One client per controller
  *
- * `KCEFClient` takes exactly one load handler and one request handler — `removeLoadHandler()` takes
+ * `CefClient` takes exactly one load handler and one request handler — `removeLoadHandler()` takes
  * no argument, because there is nothing to choose between. So a client cannot carry two controllers
  * without them silently overwriting each other's page-load callbacks, which presents as a lane
  * whose `navigate` never returns.
@@ -66,7 +65,7 @@ import javax.imageio.ImageWriteParam
  */
 class CefWebViewController private constructor(
     /** The browser this controller drives. */
-    val browser: KCEFBrowser,
+    val browser: CefBrowser,
     /**
      * Where this lane's pixels come out. Draw it; a lane whose surface nobody draws still loads and
      * is still drivable, it is simply invisible.
@@ -120,9 +119,9 @@ class CefWebViewController private constructor(
     init {
         channel.router.addHandler(
             channel.handler(inbox, scriptResults, ownedBy = { browser.identifier }),
-            // Not the first handler: KCEFClient installs a router of its own for the
-            // `evaluateJavaScript` this controller deliberately does not use, and displacing it
-            // would break any caller that does.
+            // The router is this controller's alone, so the position among its handlers is
+            // immaterial; appended rather than prepended only so a host that adds its own handler
+            // to `channel.router` keeps the order it added them in.
             false,
         )
         // The router itself was registered in [create], before the browser existed. Only the
@@ -141,12 +140,12 @@ class CefWebViewController private constructor(
     }
 
     /**
-     * Loads [html] through KCEF's virtual-resource mechanism.
+     * Loads [html] from a generated `file://` URL that [CefHtmlDocuments] answers with it.
      *
      * **[baseUrl] does not become the document's origin here**, which is the one place this
-     * platform's `loadHtml` is weaker than the other two. KCEF serves the markup from a generated
-     * `file://` URL and uses the URL it is given only as the key, so relative URLs resolve against
-     * that generated path and the document's origin is opaque. Android honours `baseUrl` properly
+     * platform's `loadHtml` is weaker than the other two. CEF has no `loadDataWithBaseURL`, so the
+     * markup is served from a generated `file://` URL, relative URLs resolve against that generated
+     * path, and the document's origin is opaque. Android honours `baseUrl` properly
      * and iOS honours it as far as WebKit allows.
      *
      * It costs nothing for what `loadHtml` is mostly for — a page the workflow itself controls,
@@ -160,7 +159,7 @@ class CefWebViewController private constructor(
     ) {
         checkOpen()
         serializer.navigate(navigationTimeoutMs) {
-            browser.loadHtml(html, baseUrl ?: KCEFBrowser.BLANK_URI)
+            browser.loadURL(CefHtmlDocuments.put(browser, html))
         }
     }
 
@@ -374,7 +373,25 @@ class CefWebViewController private constructor(
         // The browser is deliberately left alive, even though [create] is what made it — see
         // WebViewController.close. Disposing it while its AWT component is still in a hierarchy is
         // the same mistake as calling WebView.destroy() before detach, and only the owner knows
-        // when it has come out. `KcefWebViewPool.dispose` does it for a pool.
+        // when it has come out. [disposeBrowser] is how the owner does it.
+    }
+
+    /**
+     * Tears down the browser [create] made: stops it, closes it, and releases the renderer process
+     * behind it. Closes this controller first if it is still open.
+     *
+     * The owner's call, never the controller's own — see [close]. Make it after the [surface] has
+     * stopped being drawn, and before disposing the client the browser was created on, or the client
+     * disposes a browser that still holds a renderer.
+     */
+    fun disposeBrowser() {
+        close()
+        CefHtmlDocuments.forget(browser)
+        runCatching {
+            browser.stopLoad()
+            browser.setCloseAllowed()
+            browser.close(true)
+        }
     }
 
     /** Rejects work aimed at a browser this controller has already taken its bridge back off. */
@@ -400,21 +417,22 @@ class CefWebViewController private constructor(
          * creation safe here: there is no native window that would need a parent it does not have.
          */
         suspend fun create(
-            client: KCEFClient,
+            client: CefClient,
             navigationTimeoutMs: Long = DEFAULT_NAVIGATION_TIMEOUT_MS,
             scriptTimeoutMs: Long = DEFAULT_SCRIPT_TIMEOUT_MS,
         ): CefWebViewController {
+            CefHtmlDocuments.install()
             val channel = CefBridgeChannel()
             client.addMessageRouter(channel.router)
             val surface = CefSurface()
             val browser =
                 withContext(Dispatchers.Swing) {
                     client.createBrowser(
-                        url = KCEFBrowser.BLANK_URI,
-                        rendering = CefRendering.CefRenderingWithHandler(surface.renderHandler, surface.eventSource),
+                        BLANK_URL,
+                        CefRendering.CefRenderingWithHandler(surface.renderHandler, surface.eventSource),
                         // Transparent, so a lane with nothing loaded yet shows the host's own
                         // background rather than an opaque white rectangle punched into the UI.
-                        isTransparent = true,
+                        true,
                     )
                 }
             surface.attach(browser)
@@ -433,6 +451,8 @@ class CefWebViewController private constructor(
         }
 
         private const val WINDOWLESS_FRAME_RATE = 30
+
+        private const val BLANK_URL = "about:blank"
 
         /**
          * Always PNG, whatever the caller asked for: CDP's JPEG is a second lossy step on top of

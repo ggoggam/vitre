@@ -8,12 +8,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import dev.datlag.kcef.KCEF
-import dev.datlag.kcef.KCEFClient
+import dev.ggoggam.vitre.core.webview.CefRuntime
 import dev.ggoggam.vitre.core.webview.CefWebViewController
 import dev.ggoggam.vitre.core.webview.PageLoadException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
+import org.cef.CefClient
 
 /**
  * The desktop host. Two differences from the other two platforms are visible to a caller.
@@ -25,14 +25,14 @@ import kotlinx.coroutines.launch
  *
  * **The browser cannot be built synchronously.**
  *
- * `KCEF.newClient()` suspends — on first run the Chromium bundle is still being unpacked — so
- * `state.controller` stays null for longer here than on Android or iOS, where the WebView exists
- * the moment the composable is measured. That is not a new contract, though: `controller` is
+ * `CefRuntime.newClient()` suspends, and the browser is created on the EDT, so `state.controller`
+ * stays null for a frame or two longer here than on Android or iOS, where the WebView exists the
+ * moment the composable is measured. That is not a new contract, though: `controller` is
  * documented as null until the view is mounted, and an effect keyed on it already handles the wait.
  * A host that wants to show a spinner should key it on `state.controller == null` rather than
  * assume the first frame has one.
  *
- * KCEF must have been initialised (`KCEF.init`) before this composable enters the composition.
+ * Chromium must have been started (`CefRuntime.init`) before this composable enters the composition.
  */
 @Composable
 actual fun VitreWebView(
@@ -42,9 +42,9 @@ actual fun VitreWebView(
     var mounted by remember(state) { mutableStateOf<MountedBrowser?>(null) }
 
     LaunchedEffect(state) {
-        // A client of its own, because a KCEFClient holds one load handler and the controller
+        // A client of its own, because a CefClient holds one load handler and the controller
         // claims it — see CefWebViewController.
-        val client = KCEF.newClient()
+        val client = CefRuntime.newClient()
         val controller = CefWebViewController.create(client)
         mounted = MountedBrowser(client, controller)
         // Started undispatched so it takes the controller's navigation lock right here — before the
@@ -73,7 +73,7 @@ actual fun VitreWebView(
     }
 
     // Drawn only once there is a lane to draw. Before that the host's own background shows
-    // through, which is what a caller wants for the length of the first-run bundle download.
+    // through, which is what a caller wants while the browser is still being created.
     mounted?.let { mount ->
         CefSurfaceView(surface = mount.controller.surface, modifier = modifier)
     }
@@ -88,12 +88,11 @@ actual fun VitreWebView(
  * process.
  */
 private class MountedBrowser(
-    private val client: KCEFClient,
+    private val client: CefClient,
     val controller: CefWebViewController,
 ) {
     fun dispose() {
-        controller.close()
-        runCatching { controller.browser.dispose() }
+        controller.disposeBrowser()
         runCatching { client.dispose() }
     }
 }

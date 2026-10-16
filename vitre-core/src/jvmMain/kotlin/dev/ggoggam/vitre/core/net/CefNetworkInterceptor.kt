@@ -70,7 +70,7 @@ class CefNetworkInterceptor(
 
     override val exchanges: SharedFlow<NetworkExchange> get() = recorder.exchanges
 
-    /** Install this on a `KCEFClient` with `addRequestHandler`. One client may hold one. */
+    /** Install this on a `CefClient` with `addRequestHandler`. One client may hold one. */
     val requestHandler: CefRequestHandler =
         object : CefRequestHandlerAdapter() {
             override fun getResourceRequestHandler(
@@ -184,7 +184,7 @@ class CefNetworkInterceptor(
         )
 
     /**
-     * Stops the fetch workers. A pool does this in `KcefWebViewPool.dispose`.
+     * Stops the fetch workers. A pool does this in `CefWebViewPool.dispose`.
      *
      * In-flight fetches finish. Waiting requests and later submissions receive a 503, completing
      * their outstanding CEF callbacks without fetching pages that are being disposed.

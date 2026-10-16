@@ -105,7 +105,7 @@ What each entry demonstrates is spelled out in
 | Kotlin | 2.3.10 (Multiplatform) |
 | Android | minSdk 24, compileSdk 36 |
 | iOS | 15.0+ (`WKWebView`) |
-| Desktop | JVM 17+ on macOS, Linux and Windows (Chromium via [KCEF](https://github.com/DATL4G/KCEF)) |
+| Desktop | [JetBrains Runtime](https://github.com/JetBrains/JetBrainsRuntime) with JCEF (`jbr_jcef`) 21, on macOS, Linux and Windows; Chromium is part of that runtime, started with `CefRuntime.init` |
 | UI layer | Compose Multiplatform, optional; `vitre-core` has no Compose dependency |
 
 ## Installation
@@ -513,7 +513,7 @@ See [docs/CONCURRENCY.md](docs/CONCURRENCY.md) for the model and the bugs it fix
 | `sample/composeApp` | Shared sample UI: a workflow gallery demonstrating the library. |
 | `sample/androidApp` | Sample Android launcher hosting `composeApp`. |
 | `sample/iosApp` | Sample iOS Xcode project hosting `composeApp` via the KMP framework. |
-| `sample/desktopApp` | Sample desktop launcher hosting `composeApp`, with the KCEF startup gate. |
+| `sample/desktopApp` | Sample desktop launcher hosting `composeApp`; starts Chromium before the window opens. |
 
 ## Building
 
@@ -548,10 +548,11 @@ plain fallback: `gradlew installDebug` onto whatever adb already sees, without t
 You can also open `sample/iosApp/iosApp.xcodeproj` in Xcode and hit Run, since the target's "Compile
 Kotlin Framework" phase builds the KMP framework first either way.
 
-`dev:desktop` is the odd one out on first run: unlike a WebView, Chromium is not already on the
-machine, so KCEF downloads and unpacks a bundle of a few hundred megabytes into
-`~/.vitre/kcef-bundle` before the gallery appears. The sample shows that as a progress screen
-and it happens once per machine; later launches go straight to the window.
+`dev:desktop` runs on a JetBrains Runtime with JCEF rather than whatever JDK Gradle itself uses,
+because that runtime is where Chromium comes from. Gradle's toolchain resolver downloads it into
+`~/.gradle/jdks` the first time, a few hundred megabytes once per machine, and every later launch
+goes straight to the window. `./gradlew :sample:desktopApp:createDistributable` packages the app
+with that runtime, Chromium included.
 
 ### What's in the sample gallery
 

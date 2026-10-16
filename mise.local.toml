@@ -63,17 +63,14 @@ android run --device="$serial" \
 """
 
 [tasks."dev:desktop"]
-description = "Build & launch the sample desktop app (Compose for Desktop + KCEF)"
+description = "Build & launch the sample desktop app (Compose for Desktop + JCEF)"
 # The simplest of the three by a wide margin: no device, no simulator, no install step — the
 # Compose Desktop plugin's `run` task builds the JVM target and launches the window in place.
 #
-# The JVM args JCEF needs (`--add-opens` for the AWT internals it reaches into) are set on every
-# JavaExec task in sample/desktopApp/build.gradle.kts rather than here, so running the main
-# function straight from an IDE works too.
-#
-# First run downloads and unpacks a Chromium bundle into ~/.vitre/kcef-bundle, which takes
-# a few minutes on a cold cache; the app shows it as a progress screen. Every later run starts
-# straight into the gallery.
+# The app runs on a JetBrains Runtime with JCEF, which is where Chromium comes from; the Gradle
+# toolchain resolver fetches it into ~/.gradle/jdks on first run, and every later run starts straight
+# into the gallery. Running the main function from an IDE needs that same runtime as the run
+# configuration's JDK — on any other JDK the app opens on a "Chromium could not be started" screen.
 run = "./gradlew :sample:desktopApp:run"
 
 [tasks."dev:ios"]
