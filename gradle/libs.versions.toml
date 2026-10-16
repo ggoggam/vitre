@@ -10,7 +10,15 @@ androidx-activity = "1.12.4"
 androidx-lifecycle = "2.9.6"
 androidx-webkit = "1.15.0"
 coroutines = "1.10.2"
-kcef = "2024.04.20.4"
+# The JCEF the desktop target compiles against, and the JetBrains Runtime it runs on. The two are one
+# setting: the jar is only the Java API, and the Chromium behind it is whatever the runtime carries,
+# so the jar has to be the API that runtime actually has. The version names do not say which
+# runtime that is — `api-1.20` is shared by builds whose signatures differ (the `-261-` ones replace
+# `CefApp.getInstance(String[], CefSettings)`, which JBR 21 has and CefRuntime calls). This is the
+# IntelliJ 253 build, the line JBR 21 ships with, and its public API matches the `jcef` module in
+# JBR 21.0.10 everywhere this library touches. Bumping `jbr` means re-checking that with `javap`.
+jcef = "137.0.17-gf354b0e-chromium-137.0.7151.104-api-1.20-253-b13"
+jbr = "21"
 koog = "1.1.1"
 androidx-test = "1.7.0"
 androidx-test-junit = "1.3.0"
@@ -30,14 +38,13 @@ kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serializa
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidx-activity" }
 androidx-webkit = { module = "androidx.webkit:webkit", version.ref = "androidx-webkit" }
 
-# Kotlin CEF Browser: an embedded Chromium for the desktop target. Brings `dev.datlag:jcef`
-# (the Java bindings) transitively; the native Chromium bundle is downloaded at first run.
-#
-# Deliberately not the newest KCEF. 2025.03.23 unpacks a current JetBrains Runtime bundle into a
-# layout its own initialiser then cannot find, and the app dies with a SIGSEGV inside JCEF's
-# `FindClass` before a window appears. This is the version compose-webview-multiplatform ships,
-# and it is paired with a pinned runtime release in sample/desktopApp — the two go together.
-kcef = { module = "dev.datlag:kcef", version.ref = "kcef" }
+# JCEF's Java API, for compiling the desktop target and nothing else. The implementation — the `jcef`
+# module and the Chromium it loads — ships inside the JetBrains Runtime (`jbr_jcef`), which is what a
+# desktop host runs on, so this jar is `compileOnly` everywhere and never reaches a POM. At runtime
+# the module in the JDK's boot layer owns the `org.cef` packages and a copy on the classpath would be
+# ignored anyway. Published by JetBrains to their own repository rather than Maven Central; see the
+# scoped `maven(...)` in settings.gradle.kts.
+jcef = { module = "org.jetbrains.intellij.deps.jcef:jcef", version.ref = "jcef" }
 
 # Koog, JetBrains' Kotlin agent framework. `agents-core` rather than the `koog-agents` umbrella:
 # the umbrella pulls every LLM client and both A2A transports, and this module needs the tool

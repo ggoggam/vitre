@@ -15,8 +15,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dev.ggoggam.vitre.core.frame.CefWebViewPool
 import dev.ggoggam.vitre.core.frame.FramePool
-import dev.ggoggam.vitre.core.frame.KcefWebViewPool
 import dev.ggoggam.vitre.core.net.InterceptionPolicy
 import dev.ggoggam.vitre.core.webview.CefSurface
 import kotlinx.coroutines.CancellationException
@@ -24,14 +24,15 @@ import kotlinx.coroutines.CancellationException
 /**
  * One CEF browser per lane, sized to the machine.
  *
- * The lane count is decided by [KcefWebViewPool.forDevice] rather than taken at face value. Fewer
+ * The lane count is decided by [CefWebViewPool.forDevice] rather than taken at face value. Fewer
  * lanes costs wall-clock and nothing else, because `FramePool.run` queues.
  *
  * Unlike the Android host, the pool is built in an effect rather than in `remember`: every step of
- * building it suspends, because KCEF hands out clients asynchronously and the browsers are created
- * on the EDT. So the grid appears a frame or two after this composable does, and [onUnavailable]
- * carries the reason when it does not appear at all — most often that `KCEF.init` was never called
- * or has not finished.
+ * building it suspends, because `CefRuntime` hands out clients asynchronously and the browsers are
+ * created on the EDT. So the grid appears a frame or two after this composable does, and
+ * [onUnavailable] carries the reason when it does not appear at all — most often that
+ * `CefRuntime.init` was never called, or that the app is not running on a JetBrains Runtime with
+ * JCEF.
  */
 @Composable
 actual fun VitreFrameHost(
@@ -45,13 +46,13 @@ actual fun VitreFrameHost(
 ) {
     val ready = remember(onPoolReady) { onPoolReady }
     val unavailable = remember(onUnavailable) { onUnavailable }
-    var lanes by remember(laneCount, policy, navigationTimeoutMs, scriptTimeoutMs) { mutableStateOf<KcefWebViewPool?>(null) }
+    var lanes by remember(laneCount, policy, navigationTimeoutMs, scriptTimeoutMs) { mutableStateOf<CefWebViewPool?>(null) }
 
     LaunchedEffect(laneCount, policy, navigationTimeoutMs, scriptTimeoutMs) {
         val built =
             runCatching {
-                KcefWebViewPool.create(
-                    laneCount = KcefWebViewPool.forDevice(laneCount),
+                CefWebViewPool.create(
+                    laneCount = CefWebViewPool.forDevice(laneCount),
                     policy = policy,
                     scriptTimeoutMs = scriptTimeoutMs,
                     navigationTimeoutMs = navigationTimeoutMs,

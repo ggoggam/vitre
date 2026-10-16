@@ -28,13 +28,6 @@ DerivedData/
 Pods/
 Podfile.lock
 
-### KCEF / JCEF ###
-# The desktop sample puts its Chromium bundle under ~/.vitre, but KCEF's own default is a
-# `jcef-bundle` directory beside the working directory — so anyone running the module straight from
-# an IDE, or with the installDir left at its default, drops several hundred megabytes into the repo.
-jcef-bundle/
-kcef-bundle/
-
 ### Secrets ###
 # `mise run test:live` reads ANTHROPIC_API_KEY from the environment. mise.local.toml is tracked, so
 # a key cannot live there — keep it here instead and `source .env.local` before running the task.

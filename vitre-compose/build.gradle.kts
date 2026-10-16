@@ -49,6 +49,9 @@ kotlin {
             // this module compiles against and leaves the native half to the consuming
             // application, which declares `compose.desktop.currentOs` for its own machine.
             implementation(compose.desktop.common)
+            // JCEF's API, compile-only for the same reason as in vitre-core: the implementation is a
+            // module of the JetBrains Runtime the app runs on, not a dependency.
+            compileOnly(libs.jcef)
         }
     }
 }

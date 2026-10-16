@@ -1,19 +1,19 @@
 package dev.ggoggam.vitre.core.frame
 
-import dev.datlag.kcef.KCEF
-import dev.datlag.kcef.KCEFBrowser
-import dev.datlag.kcef.KCEFClient
 import dev.ggoggam.vitre.core.net.CefNetworkInterceptor
 import dev.ggoggam.vitre.core.net.InterceptionPolicy
 import dev.ggoggam.vitre.core.net.NetworkTap
+import dev.ggoggam.vitre.core.webview.CefRuntime
 import dev.ggoggam.vitre.core.webview.CefSurface
 import dev.ggoggam.vitre.core.webview.CefWebViewController
 import dev.ggoggam.vitre.core.webview.DEFAULT_NAVIGATION_TIMEOUT_MS
 import dev.ggoggam.vitre.core.webview.DEFAULT_SCRIPT_TIMEOUT_MS
+import org.cef.CefClient
+import org.cef.browser.CefBrowser
 import java.lang.management.ManagementFactory
 
 /**
- * A pool of lanes for the desktop: one Kotlin CEF Browser each, every site loaded as a top-level
+ * A pool of lanes for the desktop: one JCEF browser each, every site loaded as a top-level
  * document.
  *
  * The same arrangement the other two pools use, and here it is the only one that was ever on the
@@ -28,18 +28,18 @@ import java.lang.management.ManagementFactory
  *
  * ### Before constructing one
  *
- * KCEF downloads and unpacks a Chromium bundle on first use, so `KCEF.init` must have completed
- * before [create] is called — [create] asks it for a client and will fail if it has not. A host
- * that wants a progress bar for that download wants `KCEF.init`'s own progress callbacks; there is
- * nothing useful this class could add to them.
+ * Start Chromium first, with [CefRuntime.init]. [create] asks [CefRuntime] for a client per lane,
+ * which waits for a start already under way and fails if none was ever begun. Chromium is part of
+ * the JetBrains Runtime the app runs on, so there is no download to wait for — only a startup that
+ * takes well under a second.
  *
  * The caller draws the [surfaces]. Unlike the other two pools there is nothing to mount: a lane
  * renders offscreen into a buffer, which is what lets Compose draw over it, clip it and scroll it
  * — see [CefSurface] for why a heavyweight component was the wrong trade here.
  */
-class KcefWebViewPool private constructor(
+class CefWebViewPool private constructor(
     val laneIds: List<String>,
-    private val clients: List<KCEFClient>,
+    private val clients: List<CefClient>,
     private val controllers: Map<String, CefWebViewController>,
     private val interceptor: CefNetworkInterceptor,
 ) {
@@ -53,7 +53,7 @@ class KcefWebViewPool private constructor(
     val surfaces: List<CefSurface> = laneIds.map { controllers.getValue(it).surface }
 
     /** The browsers behind the lanes, for the occasional thing the controller does not expose. */
-    val browsers: List<KCEFBrowser> = laneIds.map { controllers.getValue(it).browser }
+    val browsers: List<CefBrowser> = laneIds.map { controllers.getValue(it).browser }
 
     val pool: FramePool =
         FramePool(
@@ -80,8 +80,7 @@ class KcefWebViewPool private constructor(
      */
     fun dispose() {
         pool.close()
-        controllers.values.forEach { it.close() }
-        browsers.forEach { runCatching { it.dispose() } }
+        controllers.values.forEach { it.disposeBrowser() }
         clients.forEach { runCatching { it.dispose() } }
         // The interceptor has threads of its own, for the same reason the browsers do: an
         // intercepted fetch must not happen on the thread CEF calls it on. See CefNetworkInterceptor.
@@ -90,9 +89,9 @@ class KcefWebViewPool private constructor(
 
     companion object {
         /**
-         * Builds a pool of [laneCount] lanes, each with its own KCEF client.
+         * Builds a pool of [laneCount] lanes, each with its own CEF client.
          *
-         * A client per lane rather than one shared: `KCEFClient` holds exactly one load handler and
+         * A client per lane rather than one shared: `CefClient` holds exactly one load handler and
          * one request handler, so two lanes on one client would overwrite each other's page-load
          * callbacks — which presents as a lane whose `navigate` never returns. See
          * [CefWebViewController].
@@ -102,10 +101,10 @@ class KcefWebViewPool private constructor(
             policy: InterceptionPolicy = InterceptionPolicy(),
             scriptTimeoutMs: Long = DEFAULT_SCRIPT_TIMEOUT_MS,
             navigationTimeoutMs: Long = DEFAULT_NAVIGATION_TIMEOUT_MS,
-        ): KcefWebViewPool {
+        ): CefWebViewPool {
             val laneIds = Lanes.laneIds(laneCount)
             val interceptor = CefNetworkInterceptor(policy)
-            val clients = laneIds.map { KCEF.newClient().apply { addRequestHandler(interceptor.requestHandler) } }
+            val clients = laneIds.map { CefRuntime.newClient().apply { addRequestHandler(interceptor.requestHandler) } }
             // The controller builds its own browser, and the order in which it does so is
             // load-bearing — see CefWebViewController.create.
             val controllers =
@@ -117,7 +116,7 @@ class KcefWebViewPool private constructor(
                             scriptTimeoutMs = scriptTimeoutMs,
                         )
                 }
-            return KcefWebViewPool(laneIds, clients, controllers, interceptor)
+            return CefWebViewPool(laneIds, clients, controllers, interceptor)
         }
 
         /**
@@ -160,3 +159,10 @@ class KcefWebViewPool private constructor(
         private const val BYTES_PER_MB = 1024L * 1024L
     }
 }
+
+/** The name this pool had while the desktop target ran on KCEF. */
+@Deprecated(
+    "KCEF is gone; the pool is plain JCEF now. Start Chromium with CefRuntime.init instead of KCEF.init.",
+    ReplaceWith("CefWebViewPool", "dev.ggoggam.vitre.core.frame.CefWebViewPool"),
+)
+typealias KcefWebViewPool = CefWebViewPool

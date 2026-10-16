@@ -29,13 +29,13 @@ dependencyResolutionManagement {
             }
         }
         mavenCentral()
-        // JOGL, which JCEF — and so KCEF, and so the desktop target — depends on at runtime for
-        // its offscreen renderer. It is not on Maven Central and never has been, so without this
-        // the desktop app compiles and then fails to resolve its own runtime classpath. Narrowed to
-        // the one group for the same reason `google()` above is: an unscoped extra repository is
-        // somewhere else every dependency in the build can silently come from.
-        maven("https://jogamp.org/deployment/maven") {
-            mavenContent { includeGroupAndSubgroups("org.jogamp") }
+        // JetBrains' own repository, for the one artifact the desktop target needs from it: JCEF's
+        // Java API, which is compile-only (see `jcef` in the version catalog). JetBrains publishes it
+        // here and not on Maven Central. Narrowed to the one group for the same reason `google()`
+        // above is: an unscoped extra repository is somewhere else every dependency in the build can
+        // silently come from.
+        maven("https://packages.jetbrains.team/maven/p/ij/intellij-dependencies") {
+            mavenContent { includeGroup("org.jetbrains.intellij.deps.jcef") }
         }
     }
 }

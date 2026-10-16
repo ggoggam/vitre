@@ -26,14 +26,14 @@ import kotlin.coroutines.resume
  * `executeJavaScript` is fire-and-forget with no result and no callback, which is why the script's
  * value has to make the return trip as a message like everything else. See [CefWebViewController].
  *
- * ### Why not KCEF's own `evaluateJavaScript`
+ * ### Why the page encodes the value
  *
- * KCEF ships one, and it is the wrong shape for this library: it reports the result by string
- * concatenation (`"..." + result`), so a JS `true` arrives as `true` and an object arrives as
- * `[object Object]`. `WebViewController.evaluateJs` promises JSON on every platform — that promise
- * is what lets `WaitFor` compare against `"true"` and `Extract` decode a row array — so the wrapper
- * here does `JSON.stringify` in the page instead, which is the same encoding Android's
- * `evaluateJavascript` produces and the one `IosWebViewController` normalises WebKit onto.
+ * A value sent home through the router is a string, and a JS value turned into one by
+ * concatenation (`"..." + result`) arrives as `true` for a `true` but as `[object Object]` for an
+ * object. `WebViewController.evaluateJs` promises JSON on every platform — that promise is what lets
+ * `WaitFor` compare against `"true"` and `Extract` decode a row array — so the wrapper here does
+ * `JSON.stringify` in the page, which is the same encoding Android's `evaluateJavascript` produces
+ * and the one `IosWebViewController` normalises WebKit onto.
  */
 internal class CefBridgeChannel(
     /**

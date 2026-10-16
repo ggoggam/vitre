@@ -24,7 +24,7 @@ kotlin {
     }
 
     // The desktop target. `jvm()` rather than a `desktop()` alias so the source set is named
-    // `jvmMain`, which is what every Compose Multiplatform and KCEF sample assumes.
+    // `jvmMain`, which is what every Compose Multiplatform sample assumes.
     jvm()
 
     iosX64()
@@ -76,10 +76,12 @@ kotlin {
             implementation(libs.kotlinx.coroutines.android)
         }
         jvmMain.dependencies {
-            // api, not implementation: a desktop host has to hand the pool the `KCEFClient` it
-            // initialised, and mounts the browser's AWT component itself, so KCEF's types are on
-            // this module's public surface rather than behind it.
-            api(libs.kcef)
+            // compileOnly, because the implementation is not a dependency at all: JCEF and its
+            // Chromium are a module of the JetBrains Runtime the desktop host runs on. Declaring it
+            // as anything stronger would put a JetBrains-repository artifact in this module's POM
+            // that every consumer would then fail to resolve from Maven Central — and would have
+            // nothing to contribute at runtime, where the JDK's own `jcef` module wins.
+            compileOnly(libs.jcef)
             // Dispatchers.Swing — the desktop equivalent of Dispatchers.Main, and what
             // WebViewDispatcher confines every CEF call to.
             implementation(libs.kotlinx.coroutines.swing)
