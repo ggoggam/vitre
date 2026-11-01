@@ -11,8 +11,10 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
 import platform.CoreGraphics.CGRectMake
+import platform.WebKit.WKContentMode
 import platform.WebKit.WKWebView
 import platform.WebKit.WKWebViewConfiguration
+import platform.WebKit.WKWebpagePreferences
 
 @OptIn(ExperimentalForeignApi::class)
 @Composable
@@ -29,6 +31,10 @@ actual fun VitreWebView(
         modifier = modifier,
         factory = {
             val config = WKWebViewConfiguration()
+            // The phone's page on an iPad too, as Android's WebView always gets; an iPad otherwise
+            // asks for the desktop site, which a workflow written against the mobile one cannot drive.
+            config.defaultWebpagePreferences =
+                WKWebpagePreferences().apply { preferredContentMode = WKContentMode.WKContentModeMobile }
             val webView =
                 WKWebView(
                     frame = CGRectMake(0.0, 0.0, 0.0, 0.0),

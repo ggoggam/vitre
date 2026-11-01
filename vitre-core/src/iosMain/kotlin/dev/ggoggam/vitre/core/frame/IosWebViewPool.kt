@@ -16,10 +16,12 @@ import dev.ggoggam.vitre.core.webview.WebViewController
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.CoreGraphics.CGRectMake
 import platform.Foundation.NSProcessInfo
+import platform.WebKit.WKContentMode
 import platform.WebKit.WKUserScript
 import platform.WebKit.WKUserScriptInjectionTime
 import platform.WebKit.WKWebView
 import platform.WebKit.WKWebViewConfiguration
+import platform.WebKit.WKWebpagePreferences
 import platform.WebKit.WKWebsiteDataStore
 
 /**
@@ -118,6 +120,11 @@ class IosWebViewPool(
         // single cookie jar Android's WebViews share. A lane that logs in and a lane that then
         // reads the account are frequently the same workflow twice.
         configuration.websiteDataStore = WKWebsiteDataStore.defaultDataStore()
+        // The phone's page on an iPad too, as Android's WebView always gets. An iPad otherwise asks
+        // for the desktop site, which a workflow written against the mobile one cannot drive, and
+        // which can sit loading past the navigation timeout.
+        configuration.defaultWebpagePreferences =
+            WKWebpagePreferences().apply { preferredContentMode = WKContentMode.WKContentModeMobile }
         // Registered only when there is something to serve. An unclaimed scheme is not inert —
         // every URL on it would answer 404 — and a pool driving real sites should have no private
         // scheme in play at all.
