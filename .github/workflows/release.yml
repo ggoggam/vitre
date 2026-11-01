@@ -110,9 +110,9 @@ jobs:
     name: publish
     needs: [decide, test]
     if: needs.decide.outputs.release == 'true'
-    # macOS, not ubuntu, and this is not a preference: the library targets iosX64, iosArm64 and
+    # macOS, not ubuntu, and this is not a preference: the library targets iosArm64 and
     # iosSimulatorArm64, and Kotlin/Native can only produce Apple klibs on a Mac. On Linux those
-    # three targets are silently skipped, and the result is a release whose root Gradle module
+    # two targets are silently skipped, and the result is a release whose root Gradle module
     # metadata advertises iOS variants that do not exist — which fails in a consumer's build, not in
     # this one. macOS can cross-compile every other target, so all five publications come from here.
     runs-on: macos-latest

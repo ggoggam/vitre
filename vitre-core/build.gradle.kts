@@ -27,7 +27,9 @@ kotlin {
     // `jvmMain`, which is what every Compose Multiplatform sample assumes.
     jvm()
 
-    iosX64()
+    // No iosX64, the Intel Mac simulator, in any module: each target is six more files per module
+    // on Maven Central, whose free tier allows an organisation 1,000 files a month (see the
+    // checksum note in gradle.properties).
     iosArm64()
     iosSimulatorArm64()
 
