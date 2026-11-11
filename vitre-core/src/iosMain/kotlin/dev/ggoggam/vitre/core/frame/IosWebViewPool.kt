@@ -125,6 +125,9 @@ class IosWebViewPool(
         // which can sit loading past the navigation timeout.
         configuration.defaultWebpagePreferences =
             WKWebpagePreferences().apply { preferredContentMode = WKContentMode.WKContentModeMobile }
+        // Video in the page, as on Android. Otherwise a page that autoplays takes it into the
+        // fullscreen player, which a lane nobody is looking at would put up over the host app.
+        configuration.allowsInlineMediaPlayback = true
         // Registered only when there is something to serve. An unclaimed scheme is not inert —
         // every URL on it would answer 404 — and a pool driving real sites should have no private
         // scheme in play at all.

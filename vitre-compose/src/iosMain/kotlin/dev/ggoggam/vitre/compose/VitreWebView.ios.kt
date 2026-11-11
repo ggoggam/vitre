@@ -35,6 +35,10 @@ actual fun VitreWebView(
             // asks for the desktop site, which a workflow written against the mobile one cannot drive.
             config.defaultWebpagePreferences =
                 WKWebpagePreferences().apply { preferredContentMode = WKContentMode.WKContentModeMobile }
+            // Video in the page, as Android's WebView plays it. An iPhone's WKWebView otherwise takes
+            // every play() — the page's own autoplay included — into the fullscreen player, over the
+            // app and everything around the WebView, whatever `playsinline` the page asked for.
+            config.allowsInlineMediaPlayback = true
             val webView =
                 WKWebView(
                     frame = CGRectMake(0.0, 0.0, 0.0, 0.0),
