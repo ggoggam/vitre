@@ -4,8 +4,8 @@ name: Release
 # place a released version is written down, so a release is a reviewable pull request like any other
 # change — and the thing that gets published is the value that was reviewed, not a tag someone
 # typed afterwards. The tag is created *by* this workflow once the publish succeeds; pushing one by
-# hand publishes nothing. A stable version goes to Maven Central, a prerelease (anything with a
-# `-`, such as 0.4.0-rc.1) to this repository's GitHub Packages registry.
+# hand publishes nothing. Every version, stable or prerelease, goes to this repository's GitHub
+# Packages registry; releases up to 0.3.1 went to Maven Central and stay there.
 on:
   push:
     branches:
@@ -24,9 +24,10 @@ env:
   # `mise install` fails. Ignoring the file keeps CI to mise.toml and mise.ci.toml.
   MISE_IGNORED_CONFIG_PATHS: ${{ github.workspace }}/mise.local.toml
 
-# No cancel-in-progress. A cancelled publish is not a no-op: the upload may already have reached
-# Central, and there is no way to take a released version back. Two bumps merged close together
-# should queue, not race.
+# No cancel-in-progress. A cancelled publish is not a no-op: GitHub Packages takes the upload one file
+# at a time, so cancelling partway leaves a half-published version that a rerun cannot finish (it
+# answers 409 to every file it already has; see `publish` in mise.toml for the way out). Two bumps
+# merged close together should queue, not race.
 concurrency:
   group: release-${{ github.ref }}
 
@@ -66,8 +67,8 @@ jobs:
             exit 0
           fi
 
-          # The placeholder that means "nothing released yet". Publishing it would burn 0.0.0-LOCAL
-          # on Central for ever, and Central versions cannot be withdrawn, only superseded.
+          # The placeholder that means "nothing released yet". Publishing it would put 0.0.0-LOCAL
+          # in front of every consumer until someone noticed and deleted it by hand.
           case "$curr" in
             *-LOCAL)
               echo "::notice::VERSION_NAME is still the $curr placeholder — nothing to release"
@@ -93,8 +94,8 @@ jobs:
           # GitHub release does not display as "Latest" and nobody lands on a release candidate
           # looking for the current version. The regex above has already established that the only
           # `-` a valid version can contain is the prerelease separator, so this is exact rather
-          # than a guess at the shape of the suffix. The flag also decides where the artifacts go:
-          # a prerelease is published to GitHub Packages, everything else to Maven Central.
+          # than a guess at the shape of the suffix. It is only about presentation: every version is
+          # published to the same GitHub Packages registry either way.
           case "$curr" in
             *-*) prerelease=true ;;
             *)   prerelease=false ;;
@@ -122,14 +123,16 @@ jobs:
     # metadata advertises iOS variants that do not exist — which fails in a consumer's build, not in
     # this one. macOS can cross-compile every other target, so all five publications come from here.
     runs-on: macos-latest
-    # Holds the Central Portal token and the signing key. An environment rather than plain repo
-    # secrets so the credentials are reachable from this workflow alone, and so a required reviewer
-    # can be added later without touching this file.
+    # Holds the signing key. An environment rather than plain repo secrets so the key is reachable
+    # from this workflow alone, and so a required reviewer can be added later without touching this
+    # file. The name is left over from when releases went to Maven Central; renaming it means
+    # creating the new environment and moving the two SIGNING_* secrets across first, or the next
+    # release signs with an empty key and fails.
     environment: maven-central
     permissions:
       # To push the tag that records the release. Nothing else here writes to the repository.
       contents: write
-      # To publish a release candidate to this repository's GitHub Packages registry.
+      # To publish to this repository's GitHub Packages registry.
       packages: write
     steps:
       - uses: actions/checkout@v6
@@ -180,28 +183,19 @@ jobs:
       # --stacktrace. Given no id, Gradle signs with the first key in the ring, which is the only
       # key we export. Set it only if the ring ever holds a second signing key, and then as the
       # 8-character short id (0A1B2C3D) — not the 16-character long id and not the fingerprint.
-      - name: Publish to Maven Central
-        if: needs.decide.outputs.prerelease != 'true'
-        env:
-          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
-          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
-          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_IN_MEMORY_KEY }}
-          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_IN_MEMORY_KEY_PASSWORD }}
-        run: mise run publish
-
-      # Release candidates go to GitHub Packages instead. Maven Central's free tier counts releases
-      # and files per month across the whole dev.ggoggam organisation, and a vitre version is several
-      # hundred files, so an RC on Central costs as much of the month as the release it leads up to.
-      # The job's GITHUB_TOKEN is enough to publish to this repository's own registry; consumers
-      # need a token with read:packages to resolve from it (see the README).
-      - name: Publish release candidate to GitHub Packages
-        if: needs.decide.outputs.prerelease == 'true'
+      # The job's GITHUB_TOKEN is all it takes to publish to this repository's own registry, so
+      # there is no registry secret to rotate; consumers need a token with read:packages to resolve
+      # from it (see the README). If this step fails partway, some files are already up and GitHub
+      # Packages will 409 on them: re-running the job does not finish the upload. Delete the
+      # version from each package that has it and re-run, or bump VERSION_NAME and release that
+      # (the `publish` task in mise.toml has the details).
+      - name: Publish to GitHub Packages
         env:
           ORG_GRADLE_PROJECT_GitHubPackagesUsername: ${{ github.actor }}
           ORG_GRADLE_PROJECT_GitHubPackagesPassword: ${{ github.token }}
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_IN_MEMORY_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_IN_MEMORY_KEY_PASSWORD }}
-        run: mise run publish:rc
+        run: mise run publish
 
       # Last, and only on success: the tag is a record of a release that happened. Tagging before
       # publishing would leave a tag pointing at a version nobody can download if the upload failed,

@@ -6,9 +6,10 @@ on:
       - main
   pull_request:
   merge_group:
-  # So release.yml can gate a Maven Central publish on these exact jobs rather than keeping a second
-  # copy of them that drifts. Maven Central is immutable — a version published from a red commit
-  # cannot be withdrawn, only superseded — so the commit being released has to prove itself.
+  # So release.yml can gate a publish on these exact jobs rather than keeping a second copy of them
+  # that drifts. GitHub Packages will not overwrite a published version, and deleting one breaks
+  # every project that depends on it, so a version published from a red commit can in practice only
+  # be superseded — the commit being released has to prove itself.
   #
   # A version bump merged to main therefore runs this workflow twice, once from the push above and
   # once through release.yml. That is the intended trade: the alternative is a `workflow_run`

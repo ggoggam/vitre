@@ -9,11 +9,10 @@ plugins {
     alias(libs.plugins.dokka) apply false
 }
 
-// Release candidates go to GitHub Packages rather than Maven Central. Central counts every release
-// and every file against the organisation's monthly free tier, and a vitre version is several
-// hundred files, so an -rc.N there costs as much of the month as the release it precedes. Stable
-// versions still go to Central through the publish plugin's own repository; this one is only ever
-// published to by `mise run publish:rc`.
+// Every release, stable or prerelease, goes to this repository's GitHub Packages registry. Releases
+// up to 0.3.1 went to Maven Central and stay there, but Central now caps how much an organisation
+// can publish a month, and a vitre version is several hundred files. This is the only remote
+// repository the library modules publish to; `mise run publish` is what uploads to it.
 //
 // `credentials(PasswordCredentials::class)` reads the gradle properties GitHubPackagesUsername and
 // GitHubPackagesPassword, which the release workflow supplies as ORG_GRADLE_PROJECT_* from its

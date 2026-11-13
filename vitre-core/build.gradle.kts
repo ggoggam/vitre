@@ -28,8 +28,9 @@ kotlin {
     jvm()
 
     // No iosX64, the Intel Mac simulator, in any module: each target is another publication per
-    // module, a couple of dozen more files on Maven Central, whose free tier caps an organisation's
-    // files a month (see the checksum note in gradle.properties).
+    // module, so another package in the registry and a couple of dozen more files in every release
+    // upload, which is not atomic (see `publish` in mise.toml), for a simulator that only runs on
+    // Intel Macs.
     iosArm64()
     iosSimulatorArm64()
 

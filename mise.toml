@@ -64,45 +64,39 @@ run = """
 """
 
 [tasks.publish]
-description = "Publish the five library modules to Maven Central (CI only — needs credentials and a signing key)"
-# One Gradle invocation for all five modules on purpose: the publish plugin funnels every module's
-# artifacts into a single Central Portal deployment, so the release is atomic — either all of
-# vitre-core, -compose, -agent, -mcp and -koog appear at this version, or none do. Running the task
-# per module would stage five separate deployments and a failure halfway through would leave a
-# half-published version that Central will not let anyone take back.
+description = "Publish the library modules to GitHub Packages (CI only — needs a token with write:packages and a signing key)"
+# Every release goes here, stable and prerelease alike: the repository is the `GitHubPackages` one
+# declared in the root build.gradle.kts, and its credentials come from the environment
+# (ORG_GRADLE_PROJECT_GitHubPackagesUsername/-Password, which the release workflow fills from its
+# GITHUB_TOKEN). Versions up to 0.3.1 are on Maven Central; nothing publishes there any more.
 #
-# `publishAndReleaseToMavenCentral` rather than `publishToMavenCentral` plus
-# `mavenCentralAutomaticPublishing=true`: same effect, but the intent is at the call site instead of
-# buried in gradle.properties, and the sibling task stays available for a dry run.
+# One Gradle invocation for all the modules, but unlike the Central deployment it replaces this is
+# NOT atomic. Each file is its own PUT, so a failure halfway — a network blip, a 5xx, a cancelled
+# job — leaves some modules (or some files of one module) at the new version and the rest missing,
+# and GitHub Packages answers 409 Conflict to any file it already has, so rerunning the job cannot
+# finish the upload. Each module is several packages (vitre-core, vitre-core-jvm,
+# vitre-core-android, vitre-core-iosarm64, ...), named dev.ggoggam.vitre.<artifactId>. To recover,
+# either delete the version from every package that has it — from the repository's Packages page, or
+# `gh api -X DELETE /user/packages/maven/<package>/versions/<id>` with a token that has
+# delete:packages — and re-run the failed release run, or bump VERSION_NAME to the next patch or -rc.N
+# and release that instead. A version that finished uploading, and that someone may already have
+# resolved, should be superseded rather than deleted.
 #
 # No version is passed. VERSION_NAME in gradle.properties is the released version — changing it on
 # main is what triggers the workflow that runs this task — so there is nothing to plumb through and
 # no second value that could disagree with the committed one.
 #
-# `--no-configuration-cache` overrides org.gradle.configuration-cache=true from gradle.properties,
-# and is not optional: the publish plugin refuses a release outright with "Publishing releases to
-# Maven Central is not supported yet with configuration caching enabled", and Gradle cannot store
-# the entry anyway — PublishToMavenRepository holds a repository spec it has no way to serialise
-# (gradle/gradle#22779). It costs nothing here. Publishing is a cold, once-per-release build on a
-# fresh runner, so there is no warm cache entry for it to reuse; every other task in this file keeps
-# the cache.
-run = "./gradlew publishAndReleaseToMavenCentral --no-configuration-cache"
-
-[tasks."publish:rc"]
-description = "Publish the library modules to GitHub Packages (CI only — for -rc.N versions)"
-# Release candidates skip Maven Central: Central's free tier counts files and releases per month
-# across the whole organisation, and an RC there spends as much of it as the release that follows.
-# The repository is declared in the root build.gradle.kts; its credentials come from the
-# environment (ORG_GRADLE_PROJECT_GitHubPackagesUsername/-Password). Signing stays on so an RC's
-# artifacts are the same files a release would ship. Unlike a Central deployment this upload is not
-# atomic: a failure halfway leaves some modules at the version, and GitHub Packages refuses to
-# overwrite a file it already has. Retry as the next -rc.N, or delete the partial versions from the
-# repository's Packages page first.
+# `--no-configuration-cache` overrides org.gradle.configuration-cache=true from gradle.properties.
+# It used to be required, because the Central release task refused to run with the cache on. This
+# task does not need it: a signed upload with the cache on stores an entry and publishes the same
+# files. It stays off because publishing is a cold, once-per-release build on a fresh runner, so there
+# is no warm entry to reuse, and every release so far has run without it. Every other task in this
+# file keeps the cache.
 run = "./gradlew publishAllPublicationsToGitHubPackagesRepository --no-configuration-cache"
 
 [tasks."publish:local"]
 description = "Publish the library modules to ~/.m2 to try them from another project"
-# Signing off. It is on globally because Maven Central rejects an unsigned artifact, and it is not
+# Signing off. It is on globally so every released artifact ships with a signature, and it is not
 # waived for the local repo — a bare `publishToMavenLocal` fails with "no configured signatory" on a
 # machine without a GPG key, which is most of them. Nothing consumes a ~/.m2 signature, so turning it
 # off here costs nothing and keeps this task usable by anyone.
