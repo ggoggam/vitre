@@ -88,6 +88,18 @@ description = "Publish the five library modules to Maven Central (CI only — ne
 # the cache.
 run = "./gradlew publishAndReleaseToMavenCentral --no-configuration-cache"
 
+[tasks."publish:rc"]
+description = "Publish the library modules to GitHub Packages (CI only — for -rc.N versions)"
+# Release candidates skip Maven Central: Central's free tier counts files and releases per month
+# across the whole organisation, and an RC there spends as much of it as the release that follows.
+# The repository is declared in the root build.gradle.kts; its credentials come from the
+# environment (ORG_GRADLE_PROJECT_GitHubPackagesUsername/-Password). Signing stays on so an RC's
+# artifacts are the same files a release would ship. Unlike a Central deployment this upload is not
+# atomic: a failure halfway leaves some modules at the version, and GitHub Packages refuses to
+# overwrite a file it already has. Retry as the next -rc.N, or delete the partial versions from the
+# repository's Packages page first.
+run = "./gradlew publishAllPublicationsToGitHubPackagesRepository --no-configuration-cache"
+
 [tasks."publish:local"]
 description = "Publish the library modules to ~/.m2 to try them from another project"
 # Signing off. It is on globally because Maven Central rejects an unsigned artifact, and it is not

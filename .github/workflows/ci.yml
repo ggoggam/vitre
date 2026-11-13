@@ -23,6 +23,11 @@ permissions:
 # is declared. Without this the file is ignored and the runner's default JDK is used.
 env:
   MISE_ENV: ci
+  # mise loads mise.local.toml in every env, CI included, and that file is the sample apps' local
+  # dev loop: android-cli, which nothing on a runner uses. Its version list holds only the newest
+  # release, so for a day after each one mise's minimum release age hides every version and
+  # `mise install` fails. Ignoring the file keeps CI to mise.toml and mise.ci.toml.
+  MISE_IGNORED_CONFIG_PATHS: ${{ github.workspace }}/mise.local.toml
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}

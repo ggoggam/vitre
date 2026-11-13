@@ -2,9 +2,10 @@ name: Release
 
 # A version bump landing on main is the release. `VERSION_NAME` in gradle.properties is the only
 # place a released version is written down, so a release is a reviewable pull request like any other
-# change — and the thing that goes to Maven Central is the value that was reviewed, not a tag someone
+# change — and the thing that gets published is the value that was reviewed, not a tag someone
 # typed afterwards. The tag is created *by* this workflow once the publish succeeds; pushing one by
-# hand publishes nothing.
+# hand publishes nothing. A stable version goes to Maven Central, a prerelease (anything with a
+# `-`, such as 0.4.0-rc.1) to this repository's GitHub Packages registry.
 on:
   push:
     branches:
@@ -17,6 +18,11 @@ permissions:
 
 env:
   MISE_ENV: ci
+  # mise loads mise.local.toml in every env, CI included, and that file is the sample apps' local
+  # dev loop: android-cli, which nothing on a runner uses. Its version list holds only the newest
+  # release, so for a day after each one mise's minimum release age hides every version and
+  # `mise install` fails. Ignoring the file keeps CI to mise.toml and mise.ci.toml.
+  MISE_IGNORED_CONFIG_PATHS: ${{ github.workspace }}/mise.local.toml
 
 # No cancel-in-progress. A cancelled publish is not a no-op: the upload may already have reached
 # Central, and there is no way to take a released version back. Two bumps merged close together
@@ -87,8 +93,8 @@ jobs:
           # GitHub release does not display as "Latest" and nobody lands on a release candidate
           # looking for the current version. The regex above has already established that the only
           # `-` a valid version can contain is the prerelease separator, so this is exact rather
-          # than a guess at the shape of the suffix. Maven Central gets it either way: the flag is
-          # about presentation on GitHub, not about what is published.
+          # than a guess at the shape of the suffix. The flag also decides where the artifacts go:
+          # a prerelease is published to GitHub Packages, everything else to Maven Central.
           case "$curr" in
             *-*) prerelease=true ;;
             *)   prerelease=false ;;
@@ -123,6 +129,8 @@ jobs:
     permissions:
       # To push the tag that records the release. Nothing else here writes to the repository.
       contents: write
+      # To publish a release candidate to this repository's GitHub Packages registry.
+      packages: write
     steps:
       - uses: actions/checkout@v6
 
@@ -173,12 +181,27 @@ jobs:
       # key we export. Set it only if the ring ever holds a second signing key, and then as the
       # 8-character short id (0A1B2C3D) — not the 16-character long id and not the fingerprint.
       - name: Publish to Maven Central
+        if: needs.decide.outputs.prerelease != 'true'
         env:
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_IN_MEMORY_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_IN_MEMORY_KEY_PASSWORD }}
         run: mise run publish
+
+      # Release candidates go to GitHub Packages instead. Maven Central's free tier counts releases
+      # and files per month across the whole dev.ggoggam organisation, and a vitre version is several
+      # hundred files, so an RC on Central costs as much of the month as the release it leads up to.
+      # The job's GITHUB_TOKEN is enough to publish to this repository's own registry; consumers
+      # need a token with read:packages to resolve from it (see the README).
+      - name: Publish release candidate to GitHub Packages
+        if: needs.decide.outputs.prerelease == 'true'
+        env:
+          ORG_GRADLE_PROJECT_GitHubPackagesUsername: ${{ github.actor }}
+          ORG_GRADLE_PROJECT_GitHubPackagesPassword: ${{ github.token }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_IN_MEMORY_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_IN_MEMORY_KEY_PASSWORD }}
+        run: mise run publish:rc
 
       # Last, and only on success: the tag is a record of a release that happened. Tagging before
       # publishing would leave a tag pointing at a version nobody can download if the upload failed,
