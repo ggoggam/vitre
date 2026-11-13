@@ -142,10 +142,10 @@ for vitre's own dependencies.
 kotlin {
     sourceSets {
         commonMain.dependencies {
-            implementation("dev.ggoggam.vitre:vitre-core:0.3.1")
-            implementation("dev.ggoggam.vitre:vitre-compose:0.3.1") // optional
-            implementation("dev.ggoggam.vitre:vitre-mcp:0.3.1")     // optional
-            implementation("dev.ggoggam.vitre:vitre-koog:0.3.1")    // optional
+            implementation("dev.ggoggam.vitre:vitre-core:0.3.2")
+            implementation("dev.ggoggam.vitre:vitre-compose:0.3.2") // optional
+            implementation("dev.ggoggam.vitre:vitre-mcp:0.3.2")     // optional
+            implementation("dev.ggoggam.vitre:vitre-koog:0.3.2")    // optional
         }
     }
 }
