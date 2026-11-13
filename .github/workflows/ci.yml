@@ -97,8 +97,6 @@ jobs:
           restore-keys: |
             test-${{ runner.os }}-
 
-      # `mise run test` covers the library modules plus the sample's MCP client tests. The
-      # live-LLM test (test:live) needs a key and the on-device test (test:android) needs
-      # hardware, so neither runs here — see the comments on those tasks in mise.toml.
+      # `mise run test` covers the library modules plus the sample's MCP client tests.
       - name: Test
         run: mise run test

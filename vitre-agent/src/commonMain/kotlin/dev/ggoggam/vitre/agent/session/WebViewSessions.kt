@@ -47,7 +47,7 @@ data class WebViewSession(
  * ever seeing this module.
  *
  * It is not MCP's registry, though MCP was the first thing to need it. Every way of letting an agent
- * at a page — MCP tools, Koog tools, whatever comes next — has the same stateless-call-to-stateful-
+ * at a page — MCP tools, an agent framework's tools, whatever comes next — has the same stateless-call-to-stateful-
  * WebView problem, and solving it once per protocol is how two solutions drift.
  *
  * Hosts register from wherever they build the WebView — a Compose `onControllerReady`, an activity,

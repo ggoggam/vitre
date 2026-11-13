@@ -2,7 +2,7 @@
 
 **WebView automation for Kotlin Multiplatform.** Describe what you want done to a page as a list of
 steps, then run it inside an embedded WebView on Android, iOS and the desktop: from your app, from
-a test, or from an LLM agent over the Model Context Protocol or Koog.
+a test, or from an LLM agent over the Model Context Protocol.
 
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.3.10-7F52FF?logo=kotlin&logoColor=white)
 ![Platforms](https://img.shields.io/badge/platforms-Android%20%7C%20iOS%20%7C%20Desktop-brightgreen)
@@ -22,9 +22,9 @@ WorkflowEngine(controller).run(workflow).collect { event ->
 }
 ```
 
-The same vocabulary is available four ways: as the Kotlin DSL above, as a Compose composable you
-drop into a screen, and, for an agent that has never seen the page, as MCP tools or as Koog tools.
-Those last two are two deliveries of one set of semantics rather than two implementations of them.
+The same vocabulary is available three ways: as the Kotlin DSL above, as a Compose composable you
+drop into a screen, and, for an agent that has never seen the page, as MCP tools. The MCP tools are
+a delivery of the same semantics rather than a second implementation of them.
 
 The block is a builder rather than a script. It runs once, up front, to assemble the step list that
 `WorkflowEngine` then walks, so ordinary Kotlin `if` inside it chooses what the workflow *contains*.
@@ -60,10 +60,9 @@ codebase for every platform, and a snapshot format an agent can read.
 - A lane pool drives up to four sites at once: one WebView per lane, borrowed by whichever
   workflow needs a page next, so six workflows on a two-lane device run three deep instead of
   losing four, and a workflow that fans out spreads its pages over every lane.
-- `vitre-mcp` exposes the whole vocabulary as MCP tools over an in-process transport, and
-  `vitre-koog` exposes it as native [Koog](https://github.com/JetBrains/koog) tools with a plugin
-  that holds the page for the length of an agent run. Both read one set of semantics out of
-  `vitre-agent`, so neither can drift into telling a model something the other does not.
+- `vitre-mcp` exposes the whole vocabulary as MCP tools over an in-process transport. The
+  semantics live in `vitre-agent`, so a host that drives `PageDriver` directly and a model talking
+  MCP are told the same things.
 - Every platform call is confined to the WebView thread and totally ordered, so the engine, your UI,
   and an agent can drive the same page without special-casing each other.
 
@@ -120,7 +119,6 @@ kotlin {
             implementation("dev.ggoggam.vitre:vitre-core:0.2.0")
             implementation("dev.ggoggam.vitre:vitre-compose:0.2.0") // optional
             implementation("dev.ggoggam.vitre:vitre-mcp:0.2.0")     // optional
-            implementation("dev.ggoggam.vitre:vitre-koog:0.2.0")    // optional
         }
     }
 }
@@ -400,7 +398,7 @@ are redacted; other form values are bounded. Hosts can configure additional subt
 `SnapshotPolicy` on `WorkflowEngine`, `PageDriver`, or `McpServer`.
 
 Hosts can disable tool operations or suspend them for user approval with `PageAccessPolicy`.
-MCP and Koog expose `capabilities` to report enabled operations and limitations. See
+The MCP server exposes `capabilities` to report enabled operations and limitations. See
 [host action authorization](docs/ACTION-POLICY.md) for examples and the enforcement boundary.
 
 From there the agent uses the returned refs (shown abbreviated below):
@@ -426,51 +424,6 @@ val transport = InProcessMcpTransport(server)
 It ships an in-process transport only, on purpose: a loopback socket would expose page automation to
 anything on the device that can reach the port, and on a WebView signed into the user's accounts
 that leaks the session, not merely the automation. See [docs/MCP.md](docs/MCP.md).
-
-### 9. Give a Koog agent the same page
-
-If the agent is written with [Koog](https://github.com/JetBrains/koog), `vitre-koog` hands it the
-same thirteen tools as Kotlin objects, with typed arguments, no server, and the same names, so a
-system prompt written for one adapter works against the other:
-
-```kotlin
-val driver = PageDriver(sessions, scope)
-
-val agent = AIAgent(
-    promptExecutor = executor,
-    llmModel = OpenAIModels.Chat.GPT4_1,
-    systemPrompt = PageToolDocs.INSTRUCTIONS,
-    toolRegistry = ToolRegistry { vitreWebView(driver) },
-)
-```
-
-A host that already runs the MCP server can bridge that instead. `vitreMcpToolRegistry(server)`
-reads `tools/list` and translates the schemas, so there is one description of the toolset rather
-than two. Point the typed tools at `server.driver` if you want both against one lease registry.
-
-The plugin is `VitrePageLease`. Ordering already stops two callers corrupting each other's
-individual steps, but it cannot make a sequence indivisible, and an agent is nothing but sequences.
-A user tapping "next page" between the agent's `wait_for` and its `extract` yields a price read off
-the wrong page, with every operation correctly serialised. `acquire_lease` fixes that, at the cost
-of requiring the model to remember to use it. The plugin takes the lease itself, for the length of
-the run, and the model never sees it:
-
-```kotlin
-val agent = AIAgent(
-    promptExecutor = executor,
-    llmModel = OpenAIModels.Chat.GPT4_1,
-    systemPrompt = PageToolDocs.INSTRUCTIONS,
-    // Lease tools off: the run already holds the page, and a model that asks for it again is
-    // queueing behind itself until its own lease expires.
-    toolRegistry = ToolRegistry { vitreWebView(driver, includeLeaseTools = false) },
-) {
-    install(VitrePageLease) { driver = pageDriver; ttlMs = 120_000 }
-}
-```
-
-The lease is bounded by a TTL, because the page is held while the agent waits on an LLM, and a
-WebView the user can see is a UI that has stopped responding to its own app. See
-[docs/KOOG.md](docs/KOOG.md).
 
 ## Locators
 
@@ -509,7 +462,6 @@ See [docs/CONCURRENCY.md](docs/CONCURRENCY.md) for the model and the bugs it fix
 | `vitre-compose` | Compose Multiplatform layer: `VitreWebView` and `VitreFrameHost`. |
 | `vitre-agent` | What every agent adapter shares: `PageDriver`, the session registry, leases, and the prose each tool is described to a model with. |
 | `vitre-mcp` | MCP server over one or more WebViews: JSON-RPC, tool schemas, transport. |
-| `vitre-koog` | Koog tools over the same WebViews, plus a bridge for an MCP server you already run and a plugin that leases the page for an agent run. |
 | `sample/composeApp` | Shared sample UI: a workflow gallery demonstrating the library. |
 | `sample/androidApp` | Sample Android launcher hosting `composeApp`. |
 | `sample/iosApp` | Sample iOS Xcode project hosting `composeApp` via the KMP framework. |
@@ -520,7 +472,6 @@ See [docs/CONCURRENCY.md](docs/CONCURRENCY.md) for the model and the bugs it fix
 ```bash
 mise install            # ktlint (mise.toml) + the android CLI (mise.local.toml)
 mise run test           # library + sample allTests
-mise run test:android   # the on-device Koog agent test (needs a device or emulator)
 mise run build          # library artifacts + Android sample APK + iOS debug framework
 mise run lint           # ktlint
 mise run fmt            # ktlint --format
@@ -590,7 +541,7 @@ else, and what reaches Maven Central is the value someone approved:
 ```
 
 Merging that fires [`.github/workflows/release.yml`](.github/workflows/release.yml), which runs the
-full CI suite against the merge commit, publishes all five library modules to Maven Central as one
+full CI suite against the merge commit, publishes all four library modules to Maven Central as one
 atomic deployment and releases it, with no button to press afterwards. Only then does it tag the
 commit `v0.2.0` and open a GitHub release for it, with notes generated from the pull requests merged
 since the last one. The tag records a release that happened rather than causing one; pushing one by
@@ -634,7 +585,6 @@ them in `~/.m2` at whatever `VERSION_NAME` currently says.
 | [docs/CONCURRENCY.md](docs/CONCURRENCY.md) | The threading model, the bugs it fixed, how MCP slots in on top. |
 | [docs/PARALLEL-LANES.md](docs/PARALLEL-LANES.md) | Lanes, interception, CORS, the traffic tap, platform differences. |
 | [docs/MCP.md](docs/MCP.md) | Tool list, handle lifetime, leases, protocol and transport decisions. |
-| [docs/KOOG.md](docs/KOOG.md) | The Koog tools, the MCP bridge, the lease plugin, and why the semantics sit under both adapters. |
 | [docs/ASYNC-BRIDGE.md](docs/ASYNC-BRIDGE.md) | The `postMessage` bridge protocol end to end. |
 
 ## Contributing

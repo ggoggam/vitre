@@ -42,8 +42,8 @@ internal class ToolFailure(
  * than building steps of its own. That split is the whole design: what belongs to MCP is the schema
  * a model is shown, the JSON its answer arrives as, and the shape a failure travels in — and
  * nothing else. Which steps a click expands to, how long a timeout may be, and what a stale handle
- * costs are page semantics, and they live in `vitre-agent` so that the Koog adapter next door
- * cannot disagree with this one about them.
+ * costs are page semantics, and they live in `vitre-agent` so that no other adapter, and no host
+ * calling [PageDriver] directly, can disagree with this one about them.
  *
  * The [PageDriver]'s failures become [ToolResult.isError] results, which is where an agent can
  * actually read them.
@@ -205,8 +205,8 @@ internal class WebViewTools(
 
     private suspend fun type(args: JsonObject): ToolResult {
         val locator = args.locator()
-        // `text` may be empty: clearing a field is a real thing to ask for, and refusing it here
-        // when the Koog adapter allows it is the two-adapters-one-vocabulary claim breaking.
+        // `text` may be empty: clearing a field is a real thing to ask for, and [PageDriver.input]
+        // accepts it, so refusing it here would be MCP disagreeing with the vocabulary it delivers.
         driver.input(locator, args.presentString("text"), args.timeoutMs(), args.target())
         return ToolResult(PageToolReplies.typed(locator))
     }
@@ -248,7 +248,7 @@ internal class WebViewTools(
     }
 
     private suspend fun sendMessage(args: JsonObject): ToolResult {
-        // Empty is a legitimate payload, and the Koog adapter accepts one.
+        // Empty is a legitimate payload, and [PageDriver.postMessage] accepts one.
         driver.postMessage(args.presentString("message"), args.target())
         return ToolResult(PageToolReplies.POSTED)
     }
@@ -310,8 +310,8 @@ internal class WebViewTools(
      * A required string that may be empty.
      *
      * For the arguments that carry a *value* rather than a name: clearing a field with `text: ""` or
-     * posting an empty payload are things a page can be asked for, and the Koog adapter's `String`
-     * parameter accepts them, so refusing them here would be a divergence rather than a check.
+     * posting an empty payload are things a page can be asked for, and [PageDriver] accepts them, so
+     * refusing them here would be a divergence rather than a check.
      */
     private fun JsonObject.presentString(name: String): String =
         string(name) ?: throw ToolFailure("`$name` is required and must be a string.")

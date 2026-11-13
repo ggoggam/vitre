@@ -37,9 +37,9 @@ import kotlin.coroutines.cancellation.CancellationException
 /**
  * What the model is told this server is for, once, before it calls anything.
  *
- * Shared with every other adapter — a Koog host puts the same text in its system prompt — so that
- * an agent meeting Vitre through one of them has not been told something different about handles,
- * guessed selectors or leases than an agent meeting it through the other.
+ * Shared with every other adapter — a host wiring the tools into its own agent puts the same text
+ * in its system prompt — so that an agent meeting Vitre through one of them has not been told
+ * something different about handles, guessed selectors or leases than one meeting it elsewhere.
  */
 private val INSTRUCTIONS = PageToolDocs.INSTRUCTIONS.trim()
 

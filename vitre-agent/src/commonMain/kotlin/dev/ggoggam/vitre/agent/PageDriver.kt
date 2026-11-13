@@ -31,8 +31,8 @@ import dev.ggoggam.vitre.core.workflow.xpath as xpathLocator
  *
  * Never a protocol or programming fault. "Timeout waiting for css `#buy`" is something an agent can
  * act on — take a snapshot, pick a real handle, try again — so it travels as a *result* the model
- * sees, which is what each adapter turns this into: an `isError` tool result over MCP, a
- * `ToolException.ValidationFailure` under Koog. Throwing it out to the host as an exception would
+ * sees, which is what each adapter turns this into: an `isError` tool result over MCP, for one.
+ * Throwing it out to the host as an exception would
  * strip the explanation out of the model's reach and leave it retrying blind.
  */
 class PageDriverException(
@@ -127,9 +127,9 @@ data class NetworkRead(
  * Android and iOS actuals — and they drifted until a boolean meant `true` on one and `"1"` on the
  * other, which nothing noticed for as long as it took to write the smoke test.
  *
- * A second *protocol* is the same hazard one level up. MCP and Koog both need "click, but fail if
- * the element was never there", both need a handle guarded against a stale document, both need
- * timeouts clamped so a model cannot park a WebView for a day. Written twice, those agree on the
+ * A second *protocol* is the same hazard one level up. Every way of handing the page to a model
+ * needs "click, but fail if the element was never there", a handle guarded against a stale
+ * document, and timeouts clamped so a model cannot park a WebView for a day. Written twice, those agree on the
  * day they are written and not much longer — and the divergence is invisible, because each
  * adapter's tests pass against its own copy.
  *
@@ -157,7 +157,7 @@ class PageDriver(
      * into a race.
      */
     private val engineContext: CoroutineContext = Dispatchers.Default,
-    /** Host-owned snapshot redaction; shared by MCP and Koog when they share this driver. */
+    /** Host-owned snapshot redaction; shared by every adapter that shares this driver. */
     private val snapshotPolicy: SnapshotPolicy = SnapshotPolicy(),
     private val accessPolicy: PageAccessPolicy = PageAccessPolicy(),
 ) {
@@ -168,10 +168,10 @@ class PageDriver(
      * WebView held by something nobody is talking to any more.
      *
      * A host running more than one adapter over the same WebViews should point both at one driver
-     * instead — `McpServer` publishes the one it built, so the Koog tools take `server.driver`. Two
-     * registries corrupt nothing — a lease is ultimately a claim on the controller, and the second
-     * registry's holder simply waits — but they issue ids the other has never heard of, so a
-     * sequence started over MCP cannot be continued from Koog.
+     * instead — `McpServer` publishes the one it built as `server.driver`. Two registries corrupt
+     * nothing — a lease is ultimately a claim on the controller, and the second registry's holder
+     * simply waits — but they issue ids the other has never heard of, so a sequence started through
+     * one adapter cannot be continued from the other.
      */
     constructor(
         sessions: WebViewSessions,
@@ -236,8 +236,8 @@ class PageDriver(
     /**
      * Whether [id] still names a live claim.
      *
-     * For a caller holding a lease on somebody else's behalf — the Koog lease feature holds one for
-     * the length of an agent run — quoting an expired id turns every later call into a hard failure,
+     * For a caller holding a lease on somebody else's behalf — for the length of an agent run, say —
+     * quoting an expired id turns every later call into a hard failure,
      * where dropping it merely gives up the atomicity that has already been lost.
      */
     fun isLeaseActive(id: String): Boolean = leases.isActive(id)

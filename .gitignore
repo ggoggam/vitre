@@ -29,8 +29,7 @@ Pods/
 Podfile.lock
 
 ### Secrets ###
-# `mise run test:live` reads ANTHROPIC_API_KEY from the environment. mise.local.toml is tracked, so
-# a key cannot live there — keep it here instead and `source .env.local` before running the task.
+# Local secrets to `source` before a task. mise.local.toml is tracked, so a key cannot live there.
 .env.local
 
 ### Logs ###

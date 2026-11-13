@@ -65,7 +65,7 @@ Detached handles also resolve to null in `exists` conditions.
 Passwords, password autocomplete fields, one-time codes and payment-card autocomplete fields are
 redacted by default. Ordinary form values are limited to 200 characters. Hosts can configure
 `SnapshotPolicy(valueLimit = 100, redactSelectors = listOf(".private", "#account-number"))` on
-`WorkflowEngine`, `PageDriver`, or `McpServer`. MCP and Koog share their driver's policy; remote tool
+`WorkflowEngine`, `PageDriver`, or `McpServer`. Adapters share their driver's policy; remote tool
 arguments cannot disable it. Selectors redact matching subtrees, including accessible names, text,
 values and links. Invalid selectors fail the snapshot instead of returning unredacted content.
 
@@ -94,7 +94,7 @@ and why requested-URL checks do not constrain native redirects.
 MCP is stateless by design — a server may not infer anything from an earlier message on the same
 connection — and a WebView is nothing but state. `WebViewSessions` is the join. It lives in
 `vitre-agent` rather than here, because every way of letting an agent at a page has the same
-problem — see [KOOG.md](KOOG.md):
+problem:
 
 ```kotlin
 object AppMcp {
@@ -138,9 +138,6 @@ call. **The expiry lives there rather than in core**: a client can crash between
 release, and a WebView held forever by a client that no longer exists is worse than any interleaving
 the lease was preventing. Core has no notion of a client that can go away, so it imposes no deadline.
 
-A Koog agent can skip the tool entirely: `VitrePageLease` takes the lease for the length of a run
-and threads it into every call as metadata the model never sees. See [KOOG.md](KOOG.md).
-
 ## The tools
 
 Thirteen, all mapping onto `WorkflowStep`s rather than generating their own JavaScript. That is not
@@ -151,7 +148,8 @@ be harder to notice.
 
 The same argument is why the tools here are thin. Each reads its arguments out of JSON and calls
 `PageDriver` in `vitre-agent`; the steps a click expands to, the bounds a timeout is clamped to, and
-the sentence a model is shown about guessing selectors all live there, shared with the Koog adapter.
+the sentence a model is shown about guessing selectors all live there, shared with any host that
+calls `PageDriver` directly.
 What belongs to this module is the protocol and nothing under it.
 
 | Tool | Notes |

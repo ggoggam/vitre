@@ -184,12 +184,12 @@ internal fun kotlinx.serialization.json.JsonObjectBuilder.intProp(
  * The ways to name an element, shared by every element-addressing tool.
  *
  * The prose is `vitre-agent`'s, not this module's: it is the prompt a model reads before choosing
- * between a handle and a guessed selector, and the Koog adapter has to give it the same advice.
+ * between a handle and a guessed selector, and every adapter has to give it the same advice.
  *
  * [allowRef] is false where the argument has to match *many* elements — `extract_rows`' row set.
  * A handle names exactly one, so offering it there advertises an argument whose only effect is a
  * one-record answer for a forty-row table, with nothing to distinguish that from a page that
- * really had one result. The Koog adapter has no such argument, so neither does this schema.
+ * really had one result.
  */
 internal fun kotlinx.serialization.json.JsonObjectBuilder.locatorProps(
     prefix: String = "",

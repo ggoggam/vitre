@@ -1,7 +1,7 @@
 # Host authorization for agent actions
 
 `PageAccessPolicy` lets the host disable operations or approve each requested action before it runs.
-Pass it to `PageDriver` or `McpServer`; MCP and Koog enforce the same policy when they share a driver.
+Pass it to `PageDriver` or `McpServer`; every adapter that shares a driver enforces the same policy.
 The default enables all operations and allows every request, preserving existing behavior.
 
 ```kotlin
@@ -21,7 +21,6 @@ val policy = PageAccessPolicy(
     },
 )
 val server = McpServer(sessions, scope, accessPolicy = policy)
-val koogTools = vitreWebViewTools(server.driver)
 ```
 
 `PageActionRequest` carries the session ID, exact controller, lease ID, operation kind, and typed
@@ -39,7 +38,7 @@ and cleanup. Their metadata does not read the page.
 The authorizer runs before taking a per-call WebView lock or entering an existing lease's use gate.
 Suspending for approval therefore lets the host keep using the page. An already-held lease still
 owns its WebView until release/expiry. Cancellation propagates; denial and authorizer failures become
-`PageDriverException`, MCP tool errors, or Koog validation failures. Each call needs its own decision.
+`PageDriverException` or MCP tool errors. Each call needs its own decision.
 
 The request is bound to the controller execution will use. A lease can still pin an older controller
 after a session has been rebuilt, and the authorizer sees that controller. Registration is checked
@@ -55,10 +54,10 @@ sequences should use an explicit lease, which intentionally keeps ownership whil
 
 ## Capability discovery
 
-Both adapters expose `capabilities(session?, lease?)`, and native hosts can call
+The MCP server exposes `capabilities(session?, lease?)`, and native hosts can call
 `driver.capabilities(target)`. It reports statically enabled operations, per-action authorization,
 and the current limitations. Disabled operations disappear from the default tool list and are still
-rejected if a client calls them directly. Koog capability replies respect `includeLeaseTools`.
+rejected if a client calls them directly.
 
 Screenshot and cookie-management tools are reported as unavailable because PageDriver does not
 expose them. `nativeCookieStore` separately says whether native host code has a controller cookie

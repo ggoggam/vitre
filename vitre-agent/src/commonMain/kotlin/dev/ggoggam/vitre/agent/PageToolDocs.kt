@@ -10,11 +10,11 @@ package dev.ggoggam.vitre.agent
  * never looked at.
  *
  * They live in `vitre-agent` rather than in an adapter because an adapter is a way of *delivering*
- * them, not a reason to have a second opinion about them. MCP renders them into JSON Schema and
- * Koog into `@LLMDescription`s; a model that meets Vitre through either one meets the same tools.
+ * them, not a reason to have a second opinion about them. MCP renders them into JSON Schema; any
+ * other adapter renders the same text, so a model meets the same tools whichever way it arrives.
  *
- * Every entry is `const` so that it can also be an annotation argument, which is what Koog's
- * schema generator reads.
+ * Every entry is `const` so that it can also be an annotation argument, for an adapter whose schema
+ * generator reads annotations.
  */
 object PageToolDocs {
     const val CAPABILITIES: String =
@@ -200,8 +200,8 @@ object PageToolDocs {
     /**
      * What the model is told the whole toolset is for, once, before it calls anything.
      *
-     * MCP delivers this as the server's `instructions`; a Koog host puts it in the agent's system
-     * prompt, which is the same job under a different name.
+     * MCP delivers this as the server's `instructions`; a host wiring the tools into its own agent
+     * puts it in the system prompt, which is the same job under a different name.
      */
     const val INSTRUCTIONS: String =
         """

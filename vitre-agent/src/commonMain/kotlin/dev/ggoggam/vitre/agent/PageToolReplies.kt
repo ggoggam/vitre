@@ -11,11 +11,11 @@ import dev.ggoggam.vitre.core.workflow.describe
  * [PageToolDocs] is the prompt; this is the reply. Both are read by a model and reasoned from, and
  * both were being written out once per adapter — which is the drift [PageDriver]'s own KDoc says
  * this module exists to stop. "Clicked css `#buy`. If it navigated … take a new `snapshot`" is not
- * MCP's sentence or Koog's; it is the page vocabulary's, and an agent that met Vitre through one
- * adapter should not be told something different by the other.
+ * MCP's sentence; it is the page vocabulary's, and an agent that met Vitre through one adapter
+ * should not be told something different by another.
  *
- * What an adapter still owns is how the reply travels: an MCP `content` block with its own
- * `structured` payload, a Koog tool result the framework encodes. Only the words are shared.
+ * What an adapter still owns is how the reply travels: for MCP, a `content` block with its own
+ * `structured` payload. Only the words are shared.
  */
 object PageToolReplies {
     /** No WebView has been registered yet, which is a host problem rather than a model one. */

@@ -279,7 +279,7 @@ class PageDriverNetworkTest {
             repeat(300) { fixture.log!!.record(exchange(it.toLong(), "https://shop.test/api/item/$it", body = "x")) }
 
             // A model that asks for everything gets a bounded answer rather than a context-eating
-            // one, and the bound is the same through MCP as it is through Koog.
+            // one, and the bound is the driver's, so every adapter gets the same one.
             assertEquals(
                 PageDriver.MAX_NETWORK_LIMIT,
                 fixture.driver
