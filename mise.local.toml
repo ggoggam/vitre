@@ -2,8 +2,8 @@
 # mise loads *.local.toml unconditionally and merges it with vitre/mise.toml, so a task
 # here can depend on one there. Nothing in this file is wanted on CI — the vitre CI job
 # only runs ktlint and :vitre-core:allTests, and it must not try to install the android
-# CLI or boot a simulator. (mise loads *.local.toml even under MISE_ENV=ci, so "local" here is
-# a convention CI relies on by not running these tasks, not an env mise enforces.)
+# CLI or boot a simulator. mise loads *.local.toml even under MISE_ENV=ci, so the workflows
+# list this file in MISE_IGNORED_CONFIG_PATHS to keep it off the runner.
 #
 # The library itself needs nothing beyond mise.toml — `mise run test`/`build` cover it. These
 # tasks exist for the loop you actually want while developing the engine: change
