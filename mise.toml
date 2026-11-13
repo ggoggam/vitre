@@ -89,7 +89,7 @@ description = "Publish the five library modules to Maven Central (CI only — ne
 run = "./gradlew publishAndReleaseToMavenCentral --no-configuration-cache"
 
 [tasks."publish:rc"]
-description = "Publish the five library modules to GitHub Packages (CI only — for -rc.N versions)"
+description = "Publish the library modules to GitHub Packages (CI only — for -rc.N versions)"
 # Release candidates skip Maven Central: Central's free tier counts files and releases per month
 # across the whole organisation, and an RC there spends as much of it as the release that follows.
 # The repository is declared in the root build.gradle.kts; its credentials come from the
