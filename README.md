@@ -126,6 +126,27 @@ kotlin {
 }
 ```
 
+Release candidates (`-rc.N` versions) are not on Maven Central; they are published to
+[GitHub Packages](https://github.com/ggoggam/vitre/packages) instead. GitHub asks for a token even
+to read a public package, so create a classic personal access token with the `read:packages` scope
+and add the repository alongside `mavenCentral()`:
+
+```kotlin
+// settings.gradle.kts
+dependencyResolutionManagement {
+    repositories {
+        mavenCentral()
+        maven("https://maven.pkg.github.com/ggoggam/vitre") {
+            credentials {
+                username = providers.gradleProperty("gpr.user").orNull ?: System.getenv("GITHUB_ACTOR")
+                password = providers.gradleProperty("gpr.key").orNull ?: System.getenv("GITHUB_TOKEN")
+            }
+            content { includeGroup("dev.ggoggam.vitre") }
+        }
+    }
+}
+```
+
 Or consume it as a source dependency: clone the repo next to your project, add
 `includeBuild("../vitre")` to `settings.gradle.kts` and drop the versions above. If you vendor the
 sources instead, add the modules directly with `include(":vitre-core")`.
