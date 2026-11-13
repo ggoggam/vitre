@@ -17,6 +17,11 @@ permissions:
 
 env:
   MISE_ENV: ci
+  # mise loads mise.local.toml in every env, CI included, and that file is the sample apps' local
+  # dev loop: android-cli, which nothing on a runner uses. Its version list holds only the newest
+  # release, so for a day after each one mise's minimum release age hides every version and
+  # `mise install` fails. Ignoring the file keeps CI to mise.toml and mise.ci.toml.
+  MISE_IGNORED_CONFIG_PATHS: ${{ github.workspace }}/mise.local.toml
 
 # No cancel-in-progress. A cancelled publish is not a no-op: the upload may already have reached
 # Central, and there is no way to take a released version back. Two bumps merged close together
