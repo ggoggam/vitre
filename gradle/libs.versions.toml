@@ -82,11 +82,13 @@ kotlin-multiplatform  = { id = "org.jetbrains.kotlin.multiplatform",        vers
 kotlin-serialization  = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 compose-multiplatform = { id = "org.jetbrains.compose",                     version.ref = "composeMultiplatform" }
 compose-compiler      = { id = "org.jetbrains.kotlin.plugin.compose",       version.ref = "kotlin" }
-# Publishing. The Central Portal API, the KMP publication layout (a root module plus one per
-# target), signing and the javadoc jar are all things this plugin already knows; hand-rolling
-# them on `maven-publish` is a few hundred lines that go stale the next time Central changes.
+# Publishing. The KMP publication layout (a root module plus one per target), the POM read from
+# gradle.properties, signing and the javadoc jar are all things this plugin already knows;
+# hand-rolling them on `maven-publish` is a few hundred lines. Releases up to 0.3.1 also used its
+# Central Portal upload; it now only builds the publications, and the root build.gradle.kts adds the
+# GitHub Packages repository they are published to.
 maven-publish         = { id = "com.vanniktech.maven.publish",              version.ref = "mavenPublish" }
 # Applied only so the publish plugin finds it: with `org.jetbrains.dokka` present it wires
-# `dokkaGeneratePublicationHtml` into the javadoc jar Central requires, instead of shipping the
-# empty stub it falls back to. Nothing in the build calls a Dokka task by hand.
+# `dokkaGeneratePublicationHtml` into the javadoc jar, so the published -javadoc.jar holds real API
+# docs instead of the empty stub it falls back to. Nothing in the build calls a Dokka task by hand.
 dokka                 = { id = "org.jetbrains.dokka",                       version.ref = "dokka" }

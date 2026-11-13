@@ -110,26 +110,12 @@ What each entry demonstrates is spelled out in
 
 ## Installation
 
-Published to Maven Central, so `mavenCentral()` in your repositories is all the setup there is:
-
-```kotlin
-// build.gradle.kts
-kotlin {
-    sourceSets {
-        commonMain.dependencies {
-            implementation("dev.ggoggam.vitre:vitre-core:0.2.0")
-            implementation("dev.ggoggam.vitre:vitre-compose:0.2.0") // optional
-            implementation("dev.ggoggam.vitre:vitre-mcp:0.2.0")     // optional
-            implementation("dev.ggoggam.vitre:vitre-koog:0.2.0")    // optional
-        }
-    }
-}
-```
-
-Release candidates (`-rc.N` versions) are not on Maven Central; they are published to
-[GitHub Packages](https://github.com/ggoggam/vitre/packages) instead. GitHub asks for a token even
-to read a public package, so create a classic personal access token with the `read:packages` scope
-and add the repository alongside `mavenCentral()`:
+Vitre is published to this repository's
+[GitHub Packages](https://github.com/ggoggam/vitre/packages) registry, stable releases and release
+candidates alike. GitHub asks for a token even to read a public package, so create a classic
+personal access token with the `read:packages` scope, put it in `~/.gradle/gradle.properties` as
+`gpr.user` (your GitHub username) and `gpr.key` (the token), or export it as `GITHUB_ACTOR` and
+`GITHUB_TOKEN` on CI, and add the repository:
 
 ```kotlin
 // settings.gradle.kts
@@ -146,6 +132,29 @@ dependencyResolutionManagement {
     }
 }
 ```
+
+`content { includeGroup(...) }` keeps Gradle from asking GitHub for every other dependency in your
+build, and keeps your token from being sent with those requests. `mavenCentral()` is still needed
+for vitre's own dependencies.
+
+```kotlin
+// build.gradle.kts
+kotlin {
+    sourceSets {
+        commonMain.dependencies {
+            implementation("dev.ggoggam.vitre:vitre-core:0.3.1")
+            implementation("dev.ggoggam.vitre:vitre-compose:0.3.1") // optional
+            implementation("dev.ggoggam.vitre:vitre-mcp:0.3.1")     // optional
+            implementation("dev.ggoggam.vitre:vitre-koog:0.3.1")    // optional
+        }
+    }
+}
+```
+
+Versions up to 0.3.1 were published to Maven Central and remain there, so `mavenCentral()` alone
+still resolves those; every later version is on GitHub Packages only. With both repositories
+declared as above, any version resolves from wherever it lives. The newest one is on the
+[releases page](https://github.com/ggoggam/vitre/releases).
 
 Or consume it as a source dependency: clone the repo next to your project, add
 `includeBuild("../vitre")` to `settings.gradle.kts` and drop the versions above. If you vendor the
@@ -602,7 +611,7 @@ then visits the first four results one after another on the gallery's single Web
 
 `VERSION_NAME` in `gradle.properties` is the released version, and the only place it is written
 down. Changing it on `main` is the release, so a release is a reviewable pull request like anything
-else, and what reaches Maven Central is the value someone approved:
+else, and what gets published is the value someone approved:
 
 ```diff
  # gradle.properties
@@ -611,38 +620,42 @@ else, and what reaches Maven Central is the value someone approved:
 ```
 
 Merging that fires [`.github/workflows/release.yml`](.github/workflows/release.yml), which runs the
-full CI suite against the merge commit, publishes all five library modules to Maven Central as one
-atomic deployment and releases it, with no button to press afterwards. Only then does it tag the
-commit `v0.2.0` and open a GitHub release for it, with notes generated from the pull requests merged
-since the last one. The tag records a release that happened rather than causing one; pushing one by
-hand publishes nothing.
+full CI suite against the merge commit and publishes all five library modules to this repository's
+GitHub Packages registry with `mise run publish`. Only then does it tag the commit `v0.2.0` and open
+a GitHub release for it, with notes generated from the pull requests merged since the last one. The
+tag records a release that happened rather than causing one; pushing one by hand publishes nothing.
 
-A version with a prerelease component (`0.3.0-rc.1`, `1.0.0-beta.2`) publishes to Maven Central
+A version with a prerelease component (`0.3.0-rc.1`, `1.0.0-beta.2`) publishes to the same registry
 like any other, but its GitHub release is flagged so it does not show up as *Latest*.
 
 `gradle.properties` also holds Kotlin, Gradle, Android and POM settings, so most edits to it are not
 releases. The workflow diffs `VERSION_NAME` against the previous commit and exits quietly when it
 has not moved. It refuses outright, before Gradle starts, on a malformed version, on the
-`0.0.0-LOCAL` placeholder, and on any version already tagged, because a Maven Central version can be
-superseded but never withdrawn.
+`0.0.0-LOCAL` placeholder, and on any version already tagged.
+
+The upload is not atomic. GitHub Packages takes each file as a separate request and answers
+`409 Conflict` for any file it already has, so if the publish step fails partway, some modules are
+up at the new version, the rest are missing, and re-running the job cannot finish the upload. Either
+delete that version from every package that has it (each module is several packages:
+`dev.ggoggam.vitre.vitre-core`, `...vitre-core-jvm`, `...vitre-core-android` and so on, all on the
+repository's Packages page) and re-run the failed workflow run, or bump `VERSION_NAME` again and
+release the next version instead.
 
 It publishes from macOS because the iOS targets need it: Kotlin/Native only builds Apple klibs on a
 Mac, and on Linux they are skipped silently rather than reported, which would ship module metadata
 advertising variants that are not there.
 
-Publishing needs four secrets on the repository's `maven-central` environment: a
-[Central Portal](https://central.sonatype.com/) user token for the verified `dev.ggoggam` namespace,
-and a GPG key to sign with.
+The job's own `GITHUB_TOKEN` is the registry credential, so the only secrets are the signing key's,
+on the repository's `maven-central` environment (named for where releases used to go):
 
 | Secret | What it is |
 |---|---|
-| `MAVEN_CENTRAL_USERNAME` / `MAVEN_CENTRAL_PASSWORD` | Central Portal user token, from Account → Generate User Token. Not the portal login. |
 | `SIGNING_IN_MEMORY_KEY` | The armoured private key: `gpg --armor --export-secret-keys <key-id>`, newlines included. |
 | `SIGNING_IN_MEMORY_KEY_PASSWORD` | That key's passphrase. |
 | `SIGNING_IN_MEMORY_KEY_ID` | Only needed if the exported ring holds more than one key; leave unset otherwise. |
 
-The public half has to be on a keyserver Central checks (`gpg --keyserver keyserver.ubuntu.com
---send-keys <key-id>`), or validation rejects every signature.
+Keep the public half on a keyserver (`gpg --keyserver keyserver.ubuntu.com --send-keys <key-id>`)
+so consumers can check the `.asc` files that come with every artifact.
 
 To try the modules from another project without releasing anything, `mise run publish:local` puts
 them in `~/.m2` at whatever `VERSION_NAME` currently says.
