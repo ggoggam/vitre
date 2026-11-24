@@ -3,6 +3,7 @@ package dev.ggoggam.vitre.compose
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import dev.ggoggam.vitre.core.webview.WebViewController
+import dev.ggoggam.vitre.core.webview.WebViewIdentity
 
 /**
  * Hosts a platform WebView, publishing its [WebViewController] on [state] while it is mounted.
@@ -26,9 +27,13 @@ import dev.ggoggam.vitre.core.webview.WebViewController
  * On leaving the composition, `state.controller` goes null, the controller is closed, and the
  * platform WebView is torn down. A controller taken from [state] must not outlive the composable:
  * calls made on it afterwards fail with `IllegalStateException`.
+ *
+ * [identity] is what the WebView tells sites it is, read once when the WebView is created: the
+ * platform's WebView by default, or the phone's browser with [WebViewIdentity.Browser].
  */
 @Composable
 expect fun VitreWebView(
     state: VitreWebViewState,
     modifier: Modifier = Modifier,
+    identity: WebViewIdentity = WebViewIdentity.WebView,
 )

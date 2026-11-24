@@ -3,6 +3,9 @@ package dev.ggoggam.vitre.core.webview
 import android.annotation.SuppressLint
 import android.view.ViewGroup
 import android.webkit.WebView
+import androidx.webkit.UserAgentMetadata
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 
 /**
  * The settings a WebView needs before a workflow can treat it as a browser.
@@ -23,13 +26,44 @@ import android.webkit.WebView
  * to it: with both `false`, `100vh` resolves correctly once the layout params are right. They are
  * left at their platform defaults rather than set on a hunch.
  *
+ * [identity] is how far the user agent is rewritten: by default only the `wv` token goes, and
+ * [WebViewIdentity.Browser] makes it Chrome's, client hints included.
+ *
  * @see withoutWebViewToken for why the user agent is rewritten.
  */
 @SuppressLint("SetJavaScriptEnabled")
-fun WebView.applyVitreWebSettings() {
+fun WebView.applyVitreWebSettings(identity: WebViewIdentity = WebViewIdentity.WebView) {
     settings.javaScriptEnabled = true
     settings.domStorageEnabled = true
     settings.userAgentString = withoutWebViewToken(settings.userAgentString)
+    if (identity == WebViewIdentity.Browser) introduceAsChrome()
+}
+
+/**
+ * Chrome's user agent ([chromeOnAndroid]) and Chrome's brand in the client hints.
+ *
+ * The brand has to be changed apart from the agent: `Sec-CH-UA` and `navigator.userAgentData` are
+ * built from the WebView's user-agent metadata, not from the agent string, and say "Android
+ * WebView" until that metadata says otherwise. Only the brand is replaced — its version, the
+ * platform, the model and the rest stay the WebView's own, which are what Chrome on the same phone
+ * would report.
+ */
+private fun WebView.introduceAsChrome() {
+    settings.userAgentString = chromeOnAndroid(settings.userAgentString)
+    if (!WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) return
+    val metadata = WebSettingsCompat.getUserAgentMetadata(settings)
+    val brands =
+        metadata.brandVersionList.map { brand ->
+            if (brand.brand != ANDROID_WEBVIEW_BRAND) {
+                brand
+            } else {
+                UserAgentMetadata.BrandVersion
+                    .Builder(brand)
+                    .setBrand(CHROME_BRAND)
+                    .build()
+            }
+        }
+    WebSettingsCompat.setUserAgentMetadata(settings, UserAgentMetadata.Builder(metadata).setBrandVersionList(brands).build())
 }
 
 /**

@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import dev.ggoggam.vitre.core.webview.CefRuntime
 import dev.ggoggam.vitre.core.webview.CefWebViewController
 import dev.ggoggam.vitre.core.webview.PageLoadException
+import dev.ggoggam.vitre.core.webview.WebViewIdentity
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
 import org.cef.CefClient
@@ -38,6 +39,8 @@ import org.cef.CefClient
 actual fun VitreWebView(
     state: VitreWebViewState,
     modifier: Modifier,
+    // Chromium's agent is already a browser's: there is nothing for an identity to change here.
+    @Suppress("UNUSED_PARAMETER") identity: WebViewIdentity,
 ) {
     var mounted by remember(state) { mutableStateOf<MountedBrowser?>(null) }
 

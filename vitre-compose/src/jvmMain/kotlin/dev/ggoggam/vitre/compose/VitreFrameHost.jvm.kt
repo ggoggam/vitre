@@ -19,6 +19,7 @@ import dev.ggoggam.vitre.core.frame.CefWebViewPool
 import dev.ggoggam.vitre.core.frame.FramePool
 import dev.ggoggam.vitre.core.net.InterceptionPolicy
 import dev.ggoggam.vitre.core.webview.CefSurface
+import dev.ggoggam.vitre.core.webview.WebViewIdentity
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -43,6 +44,8 @@ actual fun VitreFrameHost(
     onPoolReady: (FramePool) -> Unit,
     onUnavailable: (String) -> Unit,
     modifier: Modifier,
+    // Chromium's agent is already a browser's: there is nothing for an identity to change here.
+    @Suppress("UNUSED_PARAMETER") identity: WebViewIdentity,
 ) {
     val ready = remember(onPoolReady) { onPoolReady }
     val unavailable = remember(onUnavailable) { onUnavailable }

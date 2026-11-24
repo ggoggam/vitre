@@ -61,4 +61,29 @@ class UserAgentTest {
         assertEquals("(Linux; Android 16)", withoutWebViewToken("(Linux; Android 16;wv)"))
         assertEquals("(Linux; Android 16)", withoutWebViewToken("(Linux; Android 16;  wv )"))
     }
+
+    @Test
+    fun `a browser identity on Android is Chrome's reduced agent`() {
+        val chrome =
+            "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36"
+        assertEquals(chrome, chromeOnAndroid(realWebViewAgent))
+        // Whether or not the wv has already gone, which is the order applyVitreWebSettings applies them in.
+        assertEquals(chrome, chromeOnAndroid(withoutWebViewToken(realWebViewAgent)))
+    }
+
+    @Test
+    fun `an agent that is not Android WebView's is not replaced by a guess`() {
+        assertEquals("MyApp/1.0", chromeOnAndroid("MyApp/1.0"))
+        val desktop =
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+        assertEquals(desktop, chromeOnAndroid(desktop))
+    }
+
+    @Test
+    fun `a browser identity on iOS ends the agent as Safari's`() {
+        assertEquals("Version/27.2 Mobile/15E148 Safari/604.1", safariApplicationName("27.2"))
+        assertEquals("Version/26.0 Mobile/15E148 Safari/604.1", safariApplicationName("26"))
+        assertEquals("Version/26.1 Mobile/15E148 Safari/604.1", safariApplicationName("26.1.2"))
+        assertEquals("Version/18.0 Mobile/15E148 Safari/604.1", safariApplicationName(""))
+    }
 }

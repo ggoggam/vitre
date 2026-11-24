@@ -6,6 +6,7 @@ import dev.ggoggam.vitre.core.frame.FramePool
 import dev.ggoggam.vitre.core.net.InterceptionPolicy
 import dev.ggoggam.vitre.core.webview.DEFAULT_NAVIGATION_TIMEOUT_MS
 import dev.ggoggam.vitre.core.webview.DEFAULT_SCRIPT_TIMEOUT_MS
+import dev.ggoggam.vitre.core.webview.WebViewIdentity
 
 /**
  * Mounts a grid of lanes and hands back a [FramePool] once every one of them is drivable.
@@ -61,4 +62,6 @@ expect fun VitreFrameHost(
     onPoolReady: (FramePool) -> Unit = {},
     onUnavailable: (String) -> Unit = {},
     modifier: Modifier = Modifier,
+    /** What the lanes tell sites they are: the platform's WebView by default. See [WebViewIdentity]. */
+    identity: WebViewIdentity = WebViewIdentity.WebView,
 )

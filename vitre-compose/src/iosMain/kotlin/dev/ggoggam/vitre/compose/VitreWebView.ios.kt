@@ -7,6 +7,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.UIKitView
 import dev.ggoggam.vitre.core.webview.IosWebViewController
 import dev.ggoggam.vitre.core.webview.PageLoadException
+import dev.ggoggam.vitre.core.webview.WebViewIdentity
+import dev.ggoggam.vitre.core.webview.applyVitreIdentity
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
@@ -21,6 +23,7 @@ import platform.WebKit.WKWebpagePreferences
 actual fun VitreWebView(
     state: VitreWebViewState,
     modifier: Modifier,
+    identity: WebViewIdentity,
 ) {
     val scope = rememberCoroutineScope()
     // onRelease has to close the same controller the factory built, and it is handed only the
@@ -39,6 +42,7 @@ actual fun VitreWebView(
             // every play() — the page's own autoplay included — into the fullscreen player, over the
             // app and everything around the WebView, whatever `playsinline` the page asked for.
             config.allowsInlineMediaPlayback = true
+            config.applyVitreIdentity(identity)
             val webView =
                 WKWebView(
                     frame = CGRectMake(0.0, 0.0, 0.0, 0.0),

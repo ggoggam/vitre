@@ -13,6 +13,8 @@ import dev.ggoggam.vitre.core.webview.DEFAULT_NAVIGATION_TIMEOUT_MS
 import dev.ggoggam.vitre.core.webview.DEFAULT_SCRIPT_TIMEOUT_MS
 import dev.ggoggam.vitre.core.webview.IosWebViewController
 import dev.ggoggam.vitre.core.webview.WebViewController
+import dev.ggoggam.vitre.core.webview.WebViewIdentity
+import dev.ggoggam.vitre.core.webview.applyVitreIdentity
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.CoreGraphics.CGRectMake
 import platform.Foundation.NSProcessInfo
@@ -53,6 +55,8 @@ class IosWebViewPool(
     private val policy: InterceptionPolicy = InterceptionPolicy(),
     scriptTimeoutMs: Long = DEFAULT_SCRIPT_TIMEOUT_MS,
     navigationTimeoutMs: Long = DEFAULT_NAVIGATION_TIMEOUT_MS,
+    /** What the lanes tell sites they are. See [WebViewIdentity]. */
+    private val identity: WebViewIdentity = WebViewIdentity.WebView,
 ) {
     val laneIds: List<String> = Lanes.laneIds(laneCount)
 
@@ -128,6 +132,7 @@ class IosWebViewPool(
         // Video in the page, as on Android. Otherwise a page that autoplays takes it into the
         // fullscreen player, which a lane nobody is looking at would put up over the host app.
         configuration.allowsInlineMediaPlayback = true
+        configuration.applyVitreIdentity(identity)
         // Registered only when there is something to serve. An unclaimed scheme is not inert —
         // every URL on it would answer 404 — and a pool driving real sites should have no private
         // scheme in play at all.
