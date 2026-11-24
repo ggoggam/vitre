@@ -9,6 +9,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import dev.ggoggam.vitre.core.webview.AndroidWebViewController
 import dev.ggoggam.vitre.core.webview.PageLoadException
+import dev.ggoggam.vitre.core.webview.WebViewIdentity
 import dev.ggoggam.vitre.core.webview.applyVitreLayoutParams
 import dev.ggoggam.vitre.core.webview.applyVitreWebSettings
 import kotlinx.coroutines.CoroutineStart
@@ -18,6 +19,7 @@ import kotlinx.coroutines.launch
 actual fun VitreWebView(
     state: VitreWebViewState,
     modifier: Modifier,
+    identity: WebViewIdentity,
 ) {
     val scope = rememberCoroutineScope()
     // onRelease has to close the same controller the factory built, and it is handed only the
@@ -36,7 +38,7 @@ actual fun VitreWebView(
                 applyVitreLayoutParams()
                 // JavaScript, DOM storage and the user agent, in one place so this host and
                 // AndroidWebViewPool's lanes cannot drift apart.
-                applyVitreWebSettings()
+                applyVitreWebSettings(identity)
                 // No webViewClient here: AndroidWebViewController installs its own to observe page
                 // loads, and overwriting it would break every awaited navigate().
                 val controller = AndroidWebViewController(this)

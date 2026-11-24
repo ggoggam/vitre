@@ -13,6 +13,7 @@ import dev.ggoggam.vitre.core.webview.AndroidWebViewController
 import dev.ggoggam.vitre.core.webview.DEFAULT_NAVIGATION_TIMEOUT_MS
 import dev.ggoggam.vitre.core.webview.DEFAULT_SCRIPT_TIMEOUT_MS
 import dev.ggoggam.vitre.core.webview.WebViewController
+import dev.ggoggam.vitre.core.webview.WebViewIdentity
 import dev.ggoggam.vitre.core.webview.applyVitreLayoutParams
 import dev.ggoggam.vitre.core.webview.applyVitreWebSettings
 
@@ -63,6 +64,8 @@ class AndroidWebViewPool(
     policy: InterceptionPolicy = InterceptionPolicy(),
     scriptTimeoutMs: Long = DEFAULT_SCRIPT_TIMEOUT_MS,
     navigationTimeoutMs: Long = DEFAULT_NAVIGATION_TIMEOUT_MS,
+    /** What the lanes tell sites they are. See [WebViewIdentity]. */
+    private val identity: WebViewIdentity = WebViewIdentity.WebView,
 ) {
     val laneIds: List<String> = Lanes.laneIds(laneCount)
 
@@ -118,7 +121,7 @@ class AndroidWebViewPool(
             applyVitreLayoutParams()
             // JavaScript, DOM storage and the user agent — shared with the `vitre-compose` host so
             // a page cannot behave differently in one and not the other.
-            applyVitreWebSettings()
+            applyVitreWebSettings(identity)
             // A lane may be pointed at plain http, and a page that ends up mixed is otherwise
             // blocked silently. Lane-only: the composable host is showing a page to a person, and
             // relaxing mixed content there is the host app's call rather than this library's.

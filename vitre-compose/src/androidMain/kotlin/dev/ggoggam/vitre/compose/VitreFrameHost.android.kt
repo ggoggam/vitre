@@ -19,6 +19,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import dev.ggoggam.vitre.core.frame.AndroidWebViewPool
 import dev.ggoggam.vitre.core.frame.FramePool
 import dev.ggoggam.vitre.core.net.InterceptionPolicy
+import dev.ggoggam.vitre.core.webview.WebViewIdentity
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -36,12 +37,13 @@ actual fun VitreFrameHost(
     onPoolReady: (FramePool) -> Unit,
     onUnavailable: (String) -> Unit,
     modifier: Modifier,
+    identity: WebViewIdentity,
 ) {
     val ready = remember(onPoolReady) { onPoolReady }
     val unavailable = remember(onUnavailable) { onUnavailable }
     val context = LocalContext.current
     val pool =
-        remember(context, laneCount, policy, navigationTimeoutMs, scriptTimeoutMs) {
+        remember(context, laneCount, policy, navigationTimeoutMs, scriptTimeoutMs, identity) {
             runCatching {
                 AndroidWebViewPool(
                     context = context,
@@ -49,6 +51,7 @@ actual fun VitreFrameHost(
                     policy = policy,
                     scriptTimeoutMs = scriptTimeoutMs,
                     navigationTimeoutMs = navigationTimeoutMs,
+                    identity = identity,
                 ).also { it.allowThirdPartyCookies() }
             }
         }
